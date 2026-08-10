@@ -1,11 +1,14 @@
-// src/app.js
-var APP_VERSION = "0.2.0";
-var OCR_SDK_VERSION = "0.4.2";
-var MODEL_NAME = "PP-OCRv5_mobile";
-var MAX_FILES = 12;
-var ORT_WASM_PATHS = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/";
-var MODEL_BASE = "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/";
-var RUN_MARKER_KEY = "dekiru-cards-ocr-running";
+const APP_VERSION = "0.2.1";
+const OCR_SDK_VERSION = "0.4.2";
+const MODEL_NAME = "PP-OCRv5_mobile";
+const MAX_FILES = 12;
+const ORT_WASM_PATHS =
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.24.3/dist/";
+const MODEL_BASE =
+  "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/";
+const RUN_MARKER_KEY = "dekiru-cards-ocr-running";
+const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+
 function createPipelineConfig() {
   const detName = `${MODEL_NAME}_det`;
   const recName = `${MODEL_NAME}_rec`;
@@ -20,53 +23,55 @@ function createPipelineConfig() {
           model_name: detName,
           limit_side_len: 64,
           limit_type: "min",
-          max_side_limit: 4e3,
+          max_side_limit: 4000,
           thresh: 0.3,
           box_thresh: 0.6,
-          unclip_ratio: 1.5
+          unclip_ratio: 1.5,
         },
         TextRecognition: {
           model_name: recName,
-          batch_size: 6,
-          score_thresh: 0
-        }
-      }
+          batch_size: 1,
+          score_thresh: 0,
+        },
+      },
     },
     warnings: [],
     unsupportedFeatures: [],
     modelSelection: {
       textDetectionModelName: detName,
-      textRecognitionModelName: recName
+      textRecognitionModelName: recName,
     },
     assets: {
       det: { url: `${MODEL_BASE}${detName}_onnx_infer.tar` },
-      rec: { url: `${MODEL_BASE}${recName}_onnx_infer.tar` }
+      rec: { url: `${MODEL_BASE}${recName}_onnx_infer.tar` },
     },
     runtimeDefaults: {
       text_det_limit_side_len: 64,
       text_det_limit_type: "min",
-      text_det_max_side_limit: 4e3,
+      text_det_max_side_limit: 4000,
       text_det_thresh: 0.3,
       text_det_box_thresh: 0.6,
       text_det_unclip_ratio: 1.5,
-      text_rec_score_thresh: 0
+      text_rec_score_thresh: 0,
     },
     pipelineBatchSize: 1,
     textDetectionBatchSize: 1,
-    textRecognitionBatchSize: 6
+    textRecognitionBatchSize: 1,
   };
 }
-var OcrWorkerClient = class {
+
+class OcrWorkerClient {
   constructor() {
     this.worker = null;
-    this.pending = /* @__PURE__ */ new Map();
+    this.pending = new Map();
     this.nextRequestId = 1;
   }
+
   ensureWorker() {
     if (this.worker) return this.worker;
     const worker = new Worker(
       new URL("./worker-entry-C9UNuyOJ.js", import.meta.url),
-      { type: "module" }
+      { type: "module" },
     );
     worker.addEventListener("message", (event) => {
       const message = event.data;
@@ -76,14 +81,14 @@ var OcrWorkerClient = class {
       this.pending.delete(message.requestId);
       if (message.status === "success") pending.resolve(message.payload);
       else {
-        const error = new Error(message.error?.message || "OCR\u51E6\u7406\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002");
+        const error = new Error(message.error?.message || "OCR処理に失敗しました。");
         error.name = message.error?.name || "Error";
         if (message.error?.stack) error.stack = message.error.stack;
         pending.reject(error);
       }
     });
     const rejectAll = (event) => {
-      const error = new Error(event?.message || "OCR\u306E\u30D0\u30C3\u30AF\u30B0\u30E9\u30A6\u30F3\u30C9\u51E6\u7406\u304C\u505C\u6B62\u3057\u307E\u3057\u305F\u3002");
+      const error = new Error(event?.message || "OCRのバックグラウンド処理が停止しました。");
       for (const pending of this.pending.values()) pending.reject(error);
       this.pending.clear();
       worker.terminate();
@@ -94,6 +99,7 @@ var OcrWorkerClient = class {
     this.worker = worker;
     return worker;
   }
+
   request(type, payload, transferables = []) {
     const worker = this.ensureWorker();
     const requestId = this.nextRequestId++;
@@ -102,7 +108,7 @@ var OcrWorkerClient = class {
       try {
         worker.postMessage(
           { kind: "worker-transport-request", type, payload, requestId },
-          transferables
+          transferables,
         );
       } catch (error) {
         this.pending.delete(requestId);
@@ -110,6 +116,7 @@ var OcrWorkerClient = class {
       }
     });
   }
+
   async initialize() {
     const response = await this.request("init", {
       options: {
@@ -119,15 +126,16 @@ var OcrWorkerClient = class {
           wasmPaths: ORT_WASM_PATHS,
           numThreads: 1,
           simd: true,
-          proxy: false
-        }
-      }
+          proxy: false,
+        },
+      },
     });
     return response.summary;
   }
+
   async predict(blob, params) {
     if (typeof createImageBitmap !== "function") {
-      throw new Error("\u3053\u306E\u30D6\u30E9\u30A6\u30B6\u306F\u30D0\u30C3\u30AF\u30B0\u30E9\u30A6\u30F3\u30C9\u753B\u50CF\u51E6\u7406\u306B\u5BFE\u5FDC\u3057\u3066\u3044\u307E\u305B\u3093\u3002");
+      throw new Error("このブラウザはバックグラウンド画像処理に対応していません。");
     }
     const bitmap = await createImageBitmap(blob);
     try {
@@ -135,18 +143,20 @@ var OcrWorkerClient = class {
         "predict",
         {
           sources: [{ kind: "imageBitmap", imageBitmap: bitmap }],
-          params
+          params,
         },
-        [bitmap]
+        [bitmap],
       );
     } catch (error) {
       try {
         bitmap.close();
       } catch (_closeError) {
+        // 転送後は既に閉じられている場合があります。
       }
       throw error;
     }
   }
+
   async dispose() {
     if (!this.worker) return;
     try {
@@ -156,17 +166,20 @@ var OcrWorkerClient = class {
       this.worker = null;
     }
   }
-};
-var state = {
+}
+
+const state = {
   pages: [],
   engine: null,
   engineReady: false,
   engineSummary: null,
   engineMode: "worker",
-  running: false
+  running: false,
 };
-var $ = (id) => document.getElementById(id);
-var ui = {
+
+const $ = (id) => document.getElementById(id);
+
+const ui = {
   libraryInput: $("libraryInput"),
   cameraInput: $("cameraInput"),
   libraryButton: $("libraryButton"),
@@ -193,22 +206,26 @@ var ui = {
   boxThresh: $("boxThresh"),
   unclipRatio: $("unclipRatio"),
   recScoreThresh: $("recScoreThresh"),
-  retryEngineButton: $("retryEngineButton")
+  retryEngineButton: $("retryEngineButton"),
 };
+
 function makeId() {
   if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
   return `page-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
+
 function formatMs(ms) {
-  if (!Number.isFinite(ms)) return "\u2014";
-  if (ms >= 1e3) return `${(ms / 1e3).toFixed(1)}\u79D2`;
+  if (!Number.isFinite(ms)) return "—";
+  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}秒`;
   return `${Math.round(ms)}ms`;
 }
+
 function formatSize(bytes) {
-  if (!Number.isFinite(bytes)) return "\u2014";
+  if (!Number.isFinite(bytes)) return "—";
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
   return `${Math.max(1, Math.round(bytes / 1024))}KB`;
 }
+
 function setStatus(title, detail, progress = 0, kind = "normal") {
   ui.statusPanel.hidden = false;
   ui.statusPanel.dataset.kind = kind;
@@ -218,6 +235,7 @@ function setStatus(title, detail, progress = 0, kind = "normal") {
   ui.progressBar.style.width = `${safeProgress}%`;
   ui.progressText.textContent = `${Math.round(safeProgress)}%`;
 }
+
 function setControlsDisabled(disabled) {
   state.running = disabled;
   ui.libraryButton.disabled = disabled;
@@ -230,11 +248,18 @@ function setControlsDisabled(disabled) {
   ui.unclipRatio.disabled = disabled;
   ui.recScoreThresh.disabled = disabled;
 }
+
 function isHeic(file) {
   const name = (file?.name || "").toLowerCase();
   const type = (file?.type || "").toLowerCase();
-  return type.includes("heic") || type.includes("heif") || name.endsWith(".heic") || name.endsWith(".heif");
+  return (
+    type.includes("heic") ||
+    type.includes("heif") ||
+    name.endsWith(".heic") ||
+    name.endsWith(".heif")
+  );
 }
+
 async function imageElementFromBlob(blob) {
   const url = URL.createObjectURL(blob);
   const image = new Image();
@@ -250,56 +275,62 @@ async function imageElementFromBlob(blob) {
       });
     }
     if (!image.naturalWidth || !image.naturalHeight) {
-      throw new Error("\u753B\u50CF\u306E\u5927\u304D\u3055\u3092\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002");
+      throw new Error("画像の大きさを取得できませんでした。");
     }
     return {
       drawable: image,
       width: image.naturalWidth,
       height: image.naturalHeight,
-      close: () => URL.revokeObjectURL(url)
+      close: () => URL.revokeObjectURL(url),
     };
   } catch (error) {
     URL.revokeObjectURL(url);
     throw error;
   }
 }
+
 async function decodeBlob(blob) {
   if (typeof createImageBitmap === "function") {
     try {
       const bitmap = await createImageBitmap(blob, {
-        imageOrientation: "from-image"
+        imageOrientation: "from-image",
       });
       return {
         drawable: bitmap,
         width: bitmap.width,
         height: bitmap.height,
-        close: () => bitmap.close()
+        close: () => bitmap.close(),
       };
     } catch (_error) {
+      // Safariでは形式によってImage要素の方が安定するため、次を試します。
     }
   }
   return imageElementFromBlob(blob);
 }
+
 function canvasToBlob(canvas, type = "image/jpeg", quality = 0.94) {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => {
         if (blob) resolve(blob);
-        else reject(new Error("\u753B\u50CF\u306E\u5909\u63DB\u306B\u5931\u6557\u3057\u307E\u3057\u305F\u3002"));
+        else reject(new Error("画像の変換に失敗しました。"));
       },
       type,
-      quality
+      quality,
     );
   });
 }
+
 async function convertHeic(blob) {
   const helper = await import("./heic-helper.js");
   return helper.convertHeicBlob(blob);
 }
+
 async function normalizeImage(file) {
   let sourceBlob = file;
   let convertedFromHeic = false;
   let decoded;
+
   try {
     decoded = await decodeBlob(sourceBlob);
   } catch (nativeError) {
@@ -308,6 +339,7 @@ async function normalizeImage(file) {
     convertedFromHeic = true;
     decoded = await decodeBlob(sourceBlob);
   }
+
   const maxSide = Number(ui.maxSide.value) || 2600;
   const scale = Math.min(1, maxSide / Math.max(decoded.width, decoded.height));
   const width = Math.max(1, Math.round(decoded.width * scale));
@@ -318,7 +350,7 @@ async function normalizeImage(file) {
   const context = canvas.getContext("2d", { alpha: false });
   if (!context) {
     decoded.close();
-    throw new Error("\u753B\u50CF\u3092\u51E6\u7406\u3059\u308B\u9818\u57DF\u3092\u4F5C\u6210\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002");
+    throw new Error("画像を処理する領域を作成できませんでした。");
   }
   context.fillStyle = "#ffffff";
   context.fillRect(0, 0, width, height);
@@ -326,6 +358,7 @@ async function normalizeImage(file) {
   context.imageSmoothingQuality = "high";
   context.drawImage(decoded.drawable, 0, 0, width, height);
   decoded.close();
+
   const normalizedBlob = await canvasToBlob(canvas);
   canvas.width = 1;
   canvas.height = 1;
@@ -335,58 +368,74 @@ async function normalizeImage(file) {
     height,
     originalWidth: decoded.width,
     originalHeight: decoded.height,
-    convertedFromHeic
+    convertedFromHeic,
   };
 }
+
 function nextPaint() {
   return new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
   });
 }
+
 function pageLabel(index) {
-  return `${index + 1}\u30DA\u30FC\u30B8\u76EE`;
+  return `${index + 1}ページ目`;
 }
+
 function updateSelectedList() {
-  ui.selectedCount.textContent = `${state.pages.length}\u679A`;
+  ui.selectedCount.textContent = `${state.pages.length}枚`;
   ui.selectedSection.hidden = state.pages.length === 0;
   ui.selectedList.replaceChildren();
+
   state.pages.forEach((page, index) => {
     const item = document.createElement("article");
     item.className = "selected-item";
+
     const thumb = document.createElement("div");
     thumb.className = "selected-thumb";
-    const image = document.createElement("img");
-    image.src = page.previewUrl;
-    image.alt = `${pageLabel(index)}\u306E\u30D7\u30EC\u30D3\u30E5\u30FC`;
-    image.addEventListener("error", () => {
+    if (IS_IOS) {
       thumb.classList.add("is-unavailable");
-      image.remove();
       const fallback = document.createElement("span");
-      fallback.textContent = isHeic(page.file) ? "HEIC" : "\u753B\u50CF";
+      fallback.textContent = isHeic(page.file) ? "HEIC" : "写真";
       thumb.append(fallback);
-    });
-    thumb.append(image);
+    } else {
+      const image = document.createElement("img");
+      image.src = page.previewUrl;
+      image.alt = `${pageLabel(index)}のプレビュー`;
+      image.addEventListener("error", () => {
+        thumb.classList.add("is-unavailable");
+        image.remove();
+        const fallback = document.createElement("span");
+        fallback.textContent = isHeic(page.file) ? "HEIC" : "画像";
+        thumb.append(fallback);
+      });
+      thumb.append(image);
+    }
+
     const info = document.createElement("div");
     info.className = "selected-info";
     const name = document.createElement("strong");
     name.textContent = page.file.name || pageLabel(index);
     const meta = document.createElement("span");
-    meta.textContent = `${pageLabel(index)}\u30FB${formatSize(page.file.size)}`;
+    meta.textContent = `${pageLabel(index)}・${formatSize(page.file.size)}`;
     info.append(name, meta);
+
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "icon-button";
-    remove.setAttribute("aria-label", `${page.file.name}\u3092\u5916\u3059`);
-    remove.textContent = "\xD7";
+    remove.setAttribute("aria-label", `${page.file.name}を外す`);
+    remove.textContent = "×";
     remove.addEventListener("click", () => removePage(page.id));
+
     item.append(thumb, info, remove);
     ui.selectedList.append(item);
   });
   setControlsDisabled(state.running);
 }
+
 function removePage(id) {
   if (state.running) return;
-  const index = state.pages.findIndex((page2) => page2.id === id);
+  const index = state.pages.findIndex((page) => page.id === id);
   if (index < 0) return;
   const [page] = state.pages.splice(index, 1);
   URL.revokeObjectURL(page.previewUrl);
@@ -397,9 +446,10 @@ function removePage(id) {
     ui.statusPanel.hidden = true;
   }
 }
+
 function addFiles(fileList) {
-  const incoming = Array.from(fileList || []).filter(
-    (file) => file.type.startsWith("image/") || isHeic(file)
+  const incoming = Array.from(fileList || []).filter((file) =>
+    file.type.startsWith("image/") || isHeic(file),
   );
   const remaining = Math.max(0, MAX_FILES - state.pages.length);
   incoming.slice(0, remaining).forEach((file) => {
@@ -412,47 +462,53 @@ function addFiles(fileList) {
       result: null,
       error: null,
       wallMs: null,
-      imageInfo: null
+      imageInfo: null,
     });
   });
   updateSelectedList();
   ui.resultSection.hidden = true;
   if (incoming.length > remaining) {
     setStatus(
-      "\u8FFD\u52A0\u3067\u304D\u308B\u306E\u306F12\u679A\u307E\u3067\u3067\u3059",
-      `${remaining}\u679A\u3092\u8FFD\u52A0\u3057\u307E\u3057\u305F\u3002\u6B8B\u308A\u306F\u6B21\u306E\u691C\u8A3C\u306B\u5206\u3051\u3066\u304F\u3060\u3055\u3044\u3002`,
+      "追加できるのは12枚までです",
+      `${remaining}枚を追加しました。残りは次の検証に分けてください。`,
       0,
-      "warning"
+      "warning",
     );
   }
 }
+
 async function ensureEngine() {
   if (state.engineReady && state.engine) return state.engine;
   setStatus(
-    "\u6587\u5B57\u8A8D\u8B58\u306E\u6E96\u5099\u3092\u3057\u3066\u3044\u307E\u3059",
-    "\u521D\u56DE\u306F\u8A8D\u8B58\u30E2\u30C7\u30EB\u3092\u8AAD\u307F\u8FBC\u3080\u305F\u3081\u3001\u901A\u4FE1\u74B0\u5883\u306B\u3088\u3063\u3066\u5C11\u3057\u6642\u9593\u304C\u304B\u304B\u308A\u307E\u3059\u3002",
-    6
+    "文字認識の準備をしています",
+    "初回は認識モデルを読み込むため、通信環境によって少し時間がかかります。",
+    6,
   );
+
   if (state.engine) {
     try {
       await state.engine.dispose();
     } catch (_error) {
+      // 破棄失敗は再初期化を妨げないため無視します。
     }
   }
+
   state.engine = new OcrWorkerClient();
   state.engineSummary = await state.engine.initialize();
   state.engineMode = "worker-lite";
   state.engineReady = true;
   return state.engine;
 }
+
 function getRecognitionParams() {
   return {
     textDetThresh: Number(ui.detThresh.value),
     textDetBoxThresh: Number(ui.boxThresh.value),
     textDetUnclipRatio: Number(ui.unclipRatio.value),
-    textRecScoreThresh: Number(ui.recScoreThresh.value)
+    textRecScoreThresh: Number(ui.recScoreThresh.value),
   };
 }
+
 function boundsFromPoly(poly) {
   const xs = poly.map((point) => point[0]);
   const ys = poly.map((point) => point[1]);
@@ -464,16 +520,17 @@ function boundsFromPoly(poly) {
     x: Math.round(left),
     y: Math.round(top),
     width: Math.round(right - left),
-    height: Math.round(bottom - top)
+    height: Math.round(bottom - top),
   };
 }
+
 function makeExportData() {
   return {
     schemaVersion: 1,
-    createdAt: (/* @__PURE__ */ new Date()).toISOString(),
+    createdAt: new Date().toISOString(),
     app: {
-      name: "DEKIRU Cards OCR\u691C\u8A3C",
-      version: APP_VERSION
+      name: "DEKIRU Cards OCR検証",
+      version: APP_VERSION,
     },
     ocr: {
       sdk: "@paddleocr/paddleocr-js",
@@ -483,15 +540,17 @@ function makeExportData() {
       mode: state.engineMode,
       settings: {
         maxImageSide: Number(ui.maxSide.value),
-        ...getRecognitionParams()
+        ...getRecognitionParams(),
       },
-      initialization: state.engineSummary ? {
-        elapsedMs: state.engineSummary.elapsedMs,
-        backend: state.engineSummary.backend,
-        detProvider: state.engineSummary.detProvider,
-        recProvider: state.engineSummary.recProvider,
-        webgpuAvailable: state.engineSummary.webgpuAvailable
-      } : null
+      initialization: state.engineSummary
+        ? {
+            elapsedMs: state.engineSummary.elapsedMs,
+            backend: state.engineSummary.backend,
+            detProvider: state.engineSummary.detProvider,
+            recProvider: state.engineSummary.recProvider,
+            webgpuAvailable: state.engineSummary.webgpuAvailable,
+          }
+        : null,
     },
     pages: state.pages.map((page, pageIndex) => ({
       page: pageIndex + 1,
@@ -502,16 +561,18 @@ function makeExportData() {
       error: page.error,
       metrics: page.result?.metrics || null,
       runtime: page.result?.runtime || null,
-      items: page.result?.items.map((item, itemIndex) => ({
-        index: itemIndex + 1,
-        text: item.text,
-        confidence: item.score,
-        poly: item.poly,
-        bounds: boundsFromPoly(item.poly)
-      })) || []
-    }))
+      items:
+        page.result?.items.map((item, itemIndex) => ({
+          index: itemIndex + 1,
+          text: item.text,
+          confidence: item.score,
+          poly: item.poly,
+          bounds: boundsFromPoly(item.poly),
+        })) || [],
+    })),
   };
 }
+
 function makeSummaryCard(label, value, note) {
   const card = document.createElement("div");
   card.className = "summary-card";
@@ -527,9 +588,11 @@ function makeSummaryCard(label, value, note) {
   }
   return card;
 }
+
 function resultColor(index) {
   return `hsl(${(index * 53 + 203) % 360} 76% 46%)`;
 }
+
 async function drawOverlay(canvas, page) {
   if (!page.normalizedBlob || !page.result) return;
   const decoded = await decodeBlob(page.normalizedBlob);
@@ -540,6 +603,7 @@ async function drawOverlay(canvas, page) {
   const context = canvas.getContext("2d", { alpha: false });
   context.drawImage(decoded.drawable, 0, 0, canvas.width, canvas.height);
   decoded.close();
+
   if (!ui.toggleBoxes.checked) return;
   context.lineJoin = "round";
   context.font = "600 13px -apple-system, BlinkMacSystemFont, sans-serif";
@@ -558,6 +622,7 @@ async function drawOverlay(canvas, page) {
     context.strokeStyle = color;
     context.lineWidth = 2;
     context.stroke();
+
     const [firstX, firstY] = item.poly[0];
     const label = String(index + 1);
     const labelX = Math.max(2, firstX * scale);
@@ -569,6 +634,7 @@ async function drawOverlay(canvas, page) {
     context.fillText(label, labelX + 5, labelY - 3);
   });
 }
+
 function makeItemsTable(page) {
   const scroll = document.createElement("div");
   scroll.className = "table-scroll";
@@ -576,13 +642,14 @@ function makeItemsTable(page) {
   table.className = "result-table";
   const head = document.createElement("thead");
   const headRow = document.createElement("tr");
-  ["No.", "\u8A8D\u8B58\u3057\u305F\u6587\u5B57", "\u81EA\u4FE1\u5EA6", "\u4F4D\u7F6E x / y / \u5E45 / \u9AD8\u3055"].forEach((label) => {
+  ["No.", "認識した文字", "自信度", "位置 x / y / 幅 / 高さ"].forEach((label) => {
     const th = document.createElement("th");
     th.textContent = label;
     headRow.append(th);
   });
   head.append(headRow);
   const body = document.createElement("tbody");
+
   page.result.items.forEach((item, index) => {
     const row = document.createElement("tr");
     const number = document.createElement("td");
@@ -591,11 +658,14 @@ function makeItemsTable(page) {
     badge.style.background = resultColor(index);
     badge.textContent = String(index + 1);
     number.append(badge);
+
     const textCell = document.createElement("td");
     textCell.className = "recognized-text";
-    textCell.textContent = item.text || "\uFF08\u7A7A\u6B04\uFF09";
+    textCell.textContent = item.text || "（空欄）";
+
     const score = document.createElement("td");
     score.textContent = `${(item.score * 100).toFixed(1)}%`;
+
     const bounds = boundsFromPoly(item.poly);
     const position = document.createElement("td");
     position.className = "position-cell";
@@ -607,24 +677,26 @@ function makeItemsTable(page) {
   scroll.append(table);
   return scroll;
 }
+
 async function renderResults() {
   ui.results.replaceChildren();
   const successfulPages = state.pages.filter((page) => page.result);
   const totalLines = successfulPages.reduce(
     (sum, page) => sum + page.result.items.length,
-    0
+    0,
   );
   const totalMs = state.pages.reduce((sum, page) => sum + (page.wallMs || 0), 0);
   ui.summaryGrid.replaceChildren(
-    makeSummaryCard("\u51E6\u7406\u3057\u305F\u753B\u50CF", `${successfulPages.length} / ${state.pages.length}\u679A`),
-    makeSummaryCard("\u8A8D\u8B58\u3057\u305F\u6587\u5B57\u5217", `${totalLines}\u4EF6`),
-    makeSummaryCard("\u5408\u8A08\u51E6\u7406\u6642\u9593", formatMs(totalMs), "\u30E2\u30C7\u30EB\u6E96\u5099\u6642\u9593\u306F\u542B\u307F\u307E\u305B\u3093"),
+    makeSummaryCard("処理した画像", `${successfulPages.length} / ${state.pages.length}枚`),
+    makeSummaryCard("認識した文字列", `${totalLines}件`),
+    makeSummaryCard("合計処理時間", formatMs(totalMs), "モデル準備時間は含みません"),
     makeSummaryCard(
-      "\u5B9F\u884C\u65B9\u5F0F",
-      state.engineMode.startsWith("worker") ? "\u30D0\u30C3\u30AF\u30B0\u30E9\u30A6\u30F3\u30C9" : "\u901A\u5E38",
-      "\u5199\u771F\u306F\u7AEF\u672B\u5185\u3067\u51E6\u7406"
-    )
+      "実行方式",
+      state.engineMode.startsWith("worker") ? "バックグラウンド" : "通常",
+      "写真は端末内で処理",
+    ),
   );
+
   for (let pageIndex = 0; pageIndex < state.pages.length; pageIndex += 1) {
     const page = state.pages[pageIndex];
     const card = document.createElement("article");
@@ -633,16 +705,17 @@ async function renderResults() {
     heading.className = "result-heading";
     const titleBlock = document.createElement("div");
     const title = document.createElement("h3");
-    title.textContent = `${pageLabel(pageIndex)}\u3000${page.file.name}`;
+    title.textContent = `${pageLabel(pageIndex)}　${page.file.name}`;
     const meta = document.createElement("p");
     if (page.result) {
-      meta.textContent = `${page.result.items.length}\u4EF6\u30FB${formatMs(page.wallMs)}\u30FB${page.imageInfo.width}\xD7${page.imageInfo.height}px`;
+      meta.textContent = `${page.result.items.length}件・${formatMs(page.wallMs)}・${page.imageInfo.width}×${page.imageInfo.height}px`;
     } else {
-      meta.textContent = "\u51E6\u7406\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F";
+      meta.textContent = "処理できませんでした";
     }
     titleBlock.append(title, meta);
     heading.append(titleBlock);
     card.append(heading);
+
     if (page.error) {
       const error = document.createElement("div");
       error.className = "page-error";
@@ -656,9 +729,11 @@ async function renderResults() {
       canvas.dataset.pageId = page.id;
       canvasWrap.append(canvas);
       card.append(canvasWrap);
+
       const confidenceNote = document.createElement("p");
       confidenceNote.className = "confidence-note";
-      confidenceNote.textContent = "\u81EA\u4FE1\u5EA6\u306FOCR\u30A8\u30F3\u30B8\u30F3\u306E\u63A8\u5B9A\u5024\u3067\u3059\u3002\u6587\u5B57\u304C\u6B63\u3057\u3044\u3053\u3068\u3092\u4FDD\u8A3C\u3059\u308B\u70B9\u6570\u3067\u306F\u3042\u308A\u307E\u305B\u3093\u3002";
+      confidenceNote.textContent =
+        "自信度はOCRエンジンの推定値です。文字が正しいことを保証する点数ではありません。";
       card.append(confidenceNote, makeItemsTable(page));
       await drawOverlay(canvas, page);
     }
@@ -666,6 +741,7 @@ async function renderResults() {
   }
   ui.resultSection.hidden = false;
 }
+
 async function redrawOverlays() {
   const canvases = ui.results.querySelectorAll("canvas[data-page-id]");
   for (const canvas of canvases) {
@@ -673,21 +749,24 @@ async function redrawOverlays() {
     if (page) await drawOverlay(canvas, page);
   }
 }
+
 async function runOcr() {
   if (state.running || state.pages.length === 0) return;
   if (location.protocol === "file:") {
     setStatus(
-      "\u3053\u306E\u958B\u304D\u65B9\u3067\u306F\u6587\u5B57\u8A8D\u8B58\u3092\u958B\u59CB\u3067\u304D\u307E\u305B\u3093",
-      "PaddleOCR.js\u306FHTTP(S)\u3067\u306E\u8868\u793A\u304C\u5FC5\u8981\u3067\u3059\u3002GitHub Pages\u306B\u7F6E\u3044\u3066\u304B\u3089\u958B\u3044\u3066\u304F\u3060\u3055\u3044\u3002",
+      "この開き方では文字認識を開始できません",
+      "PaddleOCR.jsはHTTP(S)での表示が必要です。GitHub Pagesに置いてから開いてください。",
       0,
-      "error"
+      "error",
     );
     return;
   }
+
   setControlsDisabled(true);
   try {
-    sessionStorage.setItem(RUN_MARKER_KEY, (/* @__PURE__ */ new Date()).toISOString());
+    sessionStorage.setItem(RUN_MARKER_KEY, new Date().toISOString());
   } catch (_storageError) {
+    // 保存できなくてもOCRは続行します。
   }
   ui.resultSection.hidden = true;
   state.pages.forEach((page) => {
@@ -695,16 +774,17 @@ async function runOcr() {
     page.error = null;
     page.wallMs = null;
   });
+
   try {
-    const engine = await ensureEngine();
+    let engine = state.engineReady ? state.engine : null;
     const pageCount = state.pages.length;
     for (let index = 0; index < pageCount; index += 1) {
       const page = state.pages[index];
-      const baseProgress = 14 + index / pageCount * 80;
+      const baseProgress = 14 + (index / pageCount) * 80;
       setStatus(
-        `${pageLabel(index)}\u3092\u8AAD\u307F\u53D6\u3063\u3066\u3044\u307E\u3059`,
-        `${page.file.name}\uFF08${index + 1} / ${pageCount}\u679A\uFF09`,
-        baseProgress
+        `${pageLabel(index)}を読み取っています`,
+        `${page.file.name}（${index + 1} / ${pageCount}枚）`,
+        baseProgress,
       );
       await nextPaint();
       const startedAt = performance.now();
@@ -719,8 +799,14 @@ async function runOcr() {
           width: normalized.width,
           height: normalized.height,
           normalizedBytes: normalized.blob.size,
-          convertedFromHeic: normalized.convertedFromHeic
+          convertedFromHeic: normalized.convertedFromHeic,
         };
+        // On memory-constrained phones, finish decoding and reducing the
+        // original camera image before loading the OCR models.
+        if (!engine) {
+          await nextPaint();
+          engine = await ensureEngine();
+        }
         const [result] = await engine.predict(normalized.blob, getRecognitionParams());
         page.result = result;
       } catch (error) {
@@ -729,28 +815,32 @@ async function runOcr() {
       }
       page.wallMs = performance.now() - startedAt;
       setStatus(
-        `${pageLabel(index)}\u306E\u51E6\u7406\u304C\u7D42\u308F\u308A\u307E\u3057\u305F`,
-        page.error ? "\u3053\u306E\u753B\u50CF\u306F\u51E6\u7406\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002\u6B21\u306E\u753B\u50CF\u3078\u9032\u307F\u307E\u3059\u3002" : `${page.result.items.length}\u4EF6\u306E\u6587\u5B57\u5217\u3092\u691C\u51FA\u3057\u307E\u3057\u305F\u3002`,
-        14 + (index + 1) / pageCount * 80,
-        page.error ? "warning" : "normal"
+        `${pageLabel(index)}の処理が終わりました`,
+        page.error
+          ? "この画像は処理できませんでした。次の画像へ進みます。"
+          : `${page.result.items.length}件の文字列を検出しました。`,
+        14 + ((index + 1) / pageCount) * 80,
+        page.error ? "warning" : "normal",
       );
       await nextPaint();
     }
+
     setStatus(
-      "\u7D50\u679C\u3092\u307E\u3068\u3081\u3066\u3044\u307E\u3059",
-      "\u753B\u50CF\u4E0A\u306E\u8A8D\u8B58\u4F4D\u7F6E\u3068\u4E00\u89A7\u3092\u4F5C\u3063\u3066\u3044\u307E\u3059\u3002",
-      96
+      "結果をまとめています",
+      "画像上の認識位置と一覧を作っています。",
+      96,
     );
     await renderResults();
     setStatus(
-      "\u691C\u8A3C\u304C\u5B8C\u4E86\u3057\u307E\u3057\u305F",
-      "\u753B\u50CF\u4E0A\u306E\u756A\u53F7\u3068\u3001\u4E0B\u306E\u8A8D\u8B58\u7D50\u679C\u4E00\u89A7\u3092\u898B\u6BD4\u3079\u3066\u304F\u3060\u3055\u3044\u3002",
+      "検証が完了しました",
+      "画像上の番号と、下の認識結果一覧を見比べてください。",
       100,
-      state.pages.some((page) => page.error) ? "warning" : "success"
+      state.pages.some((page) => page.error) ? "warning" : "success",
     );
     try {
       sessionStorage.removeItem(RUN_MARKER_KEY);
     } catch (_storageError) {
+      // 表示結果には影響しません。
     }
     ui.resultSection.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
@@ -758,26 +848,28 @@ async function runOcr() {
     state.engineReady = false;
     const message = error instanceof Error ? error.message : String(error);
     setStatus(
-      "\u6587\u5B57\u8A8D\u8B58\u3092\u958B\u59CB\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F",
+      "文字認識を開始できませんでした",
       message,
       0,
-      "error"
+      "error",
     );
     ui.retryEngineButton.hidden = false;
     try {
       sessionStorage.removeItem(RUN_MARKER_KEY);
     } catch (_storageError) {
+      // エラー表示には影響しません。
     }
   } finally {
     setControlsDisabled(false);
   }
 }
+
 async function copyJson() {
   const text = JSON.stringify(makeExportData(), null, 2);
   try {
     await navigator.clipboard.writeText(text);
     const previous = ui.copyJsonButton.textContent;
-    ui.copyJsonButton.textContent = "\u30B3\u30D4\u30FC\u3057\u307E\u3057\u305F";
+    ui.copyJsonButton.textContent = "コピーしました";
     setTimeout(() => {
       ui.copyJsonButton.textContent = previous;
     }, 1600);
@@ -793,19 +885,21 @@ async function copyJson() {
     textarea.remove();
   }
 }
+
 function downloadJson() {
   const text = JSON.stringify(makeExportData(), null, 2);
   const blob = new Blob([text], { type: "application/json;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
-  const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   anchor.href = url;
   anchor.download = `DEKIRU_Cards_OCR_result_${stamp}.json`;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1e3);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
 function clearAll() {
   if (state.running) return;
   state.pages.forEach((page) => {
@@ -820,6 +914,7 @@ function clearAll() {
   ui.statusPanel.hidden = true;
   updateSelectedList();
 }
+
 function bindEvents() {
   ui.libraryButton.addEventListener("click", () => ui.libraryInput.click());
   ui.cameraButton.addEventListener("click", () => ui.cameraInput.click());
@@ -842,10 +937,11 @@ function bindEvents() {
     runOcr();
   });
 }
+
 function initialize() {
-  $("versionLabel").textContent = `\u691C\u8A3C\u7248 v${APP_VERSION}`;
-  if (/iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-    ui.maxSide.value = "2000";
+  $("versionLabel").textContent = `検証版 v${APP_VERSION}`;
+  if (IS_IOS) {
+    ui.maxSide.value = "1600";
   }
   if (location.protocol === "file:") {
     ui.httpWarning.hidden = false;
@@ -854,15 +950,17 @@ function initialize() {
     if (sessionStorage.getItem(RUN_MARKER_KEY)) {
       sessionStorage.removeItem(RUN_MARKER_KEY);
       setStatus(
-        "\u524D\u56DE\u306E\u51E6\u7406\u4E2D\u306B\u30DA\u30FC\u30B8\u304C\u518D\u8AAD\u307F\u8FBC\u307F\u3055\u308C\u307E\u3057\u305F",
-        "\u7AEF\u672B\u306E\u8CA0\u8377\u304C\u9AD8\u304F\u306A\u3063\u305F\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059\u3002\u753B\u50CF\u306E\u6700\u5927\u8FBA\u30922000px\u306B\u3057\u3066\u30011\u679A\u305A\u3064\u8A66\u3057\u3066\u304F\u3060\u3055\u3044\u3002",
+        "前回の処理中にページが再読み込みされました",
+        "端末の負荷が高くなった可能性があります。画像の最大辺を1600pxにして、1枚ずつ試してください。",
         0,
-        "warning"
+        "warning",
       );
     }
   } catch (_storageError) {
+    // セッション保存が使えない場合は通常表示します。
   }
   bindEvents();
   updateSelectedList();
 }
+
 initialize();
