@@ -1,4 +1,4 @@
-const APP_VERSION = "0.2.1";
+const APP_VERSION = "0.2.2";
 const OCR_SDK_VERSION = "0.4.2";
 const MODEL_NAME = "PP-OCRv5_mobile";
 const MAX_FILES = 12;
@@ -7,7 +7,43 @@ const ORT_WASM_PATHS =
 const MODEL_BASE =
   "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/";
 const RUN_MARKER_KEY = "dekiru-cards-ocr-running";
-const IS_IOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+const IS_IOS =
+  /iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+  new URLSearchParams(location.search).get("ios") === "1";
+
+function writeRunMarker(phase, detail = "") {
+  try {
+    sessionStorage.setItem(
+      RUN_MARKER_KEY,
+      JSON.stringify({ phase, detail, at: new Date().toISOString() }),
+    );
+  } catch (_storageError) {
+    // OCR can continue even if session storage is unavailable.
+  }
+}
+
+function readRunMarker() {
+  try {
+    const raw = sessionStorage.getItem(RUN_MARKER_KEY);
+    if (!raw) return null;
+    sessionStorage.removeItem(RUN_MARKER_KEY);
+    try {
+      return JSON.parse(raw);
+    } catch (_parseError) {
+      return { phase: "unknown", detail: "" };
+    }
+  } catch (_storageError) {
+    return null;
+  }
+}
+
+function clearRunMarker() {
+  try {
+    sessionStorage.removeItem(RUN_MARKER_KEY);
+  } catch (_storageError) {
+    // Result display is unaffected.
+  }
+}
 
 function createPipelineConfig() {
   const detName = `${MODEL_NAME}_det`;
@@ -326,6 +362,52 @@ async function convertHeic(blob) {
   return helper.convertHeicBlob(blob);
 }
 
+async function makeOcrTiles(canvas) {
+  if (!IS_IOS) {
+    return [
+      {
+        blob: await canvasToBlob(canvas),
+        x: 0,
+        y: 0,
+        width: canvas.width,
+        height: canvas.height,
+      },
+    ];
+  }
+
+  const tileCount = 3;
+  const overlap = Math.max(64, Math.round(Math.min(canvas.width, canvas.height) * 0.07));
+  const splitVertically = canvas.height >= canvas.width;
+  const longSide = splitVertically ? canvas.height : canvas.width;
+  const baseSize = Math.ceil(longSide / tileCount);
+  const tiles = [];
+
+  for (let index = 0; index < tileCount; index += 1) {
+    const coreStart = index * baseSize;
+    if (coreStart >= longSide) break;
+    const coreEnd = Math.min(longSide, (index + 1) * baseSize);
+    const start = Math.max(0, coreStart - (index > 0 ? overlap : 0));
+    const end = Math.min(longSide, coreEnd + (index < tileCount - 1 ? overlap : 0));
+    const x = splitVertically ? 0 : start;
+    const y = splitVertically ? start : 0;
+    const width = splitVertically ? canvas.width : end - start;
+    const height = splitVertically ? end - start : canvas.height;
+    const tileCanvas = document.createElement("canvas");
+    tileCanvas.width = width;
+    tileCanvas.height = height;
+    const context = tileCanvas.getContext("2d", { alpha: false });
+    if (!context) throw new Error("画像を分割する領域を作成できませんでした。");
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(canvas, x, y, width, height, 0, 0, width, height);
+    const blob = await canvasToBlob(tileCanvas);
+    tileCanvas.width = 1;
+    tileCanvas.height = 1;
+    tiles.push({ blob, x, y, width, height });
+  }
+  return tiles;
+}
+
 async function normalizeImage(file) {
   let sourceBlob = file;
   let convertedFromHeic = false;
@@ -360,10 +442,12 @@ async function normalizeImage(file) {
   decoded.close();
 
   const normalizedBlob = await canvasToBlob(canvas);
+  const tiles = await makeOcrTiles(canvas);
   canvas.width = 1;
   canvas.height = 1;
   return {
     blob: normalizedBlob,
+    tiles,
     width,
     height,
     originalWidth: decoded.width,
@@ -521,6 +605,82 @@ function boundsFromPoly(poly) {
     y: Math.round(top),
     width: Math.round(right - left),
     height: Math.round(bottom - top),
+  };
+}
+
+function overlapRatio(a, b) {
+  const left = Math.max(a.x, b.x);
+  const top = Math.max(a.y, b.y);
+  const right = Math.min(a.x + a.width, b.x + b.width);
+  const bottom = Math.min(a.y + a.height, b.y + b.height);
+  const intersection = Math.max(0, right - left) * Math.max(0, bottom - top);
+  if (!intersection) return 0;
+  const smallerArea = Math.max(
+    1,
+    Math.min(a.width * a.height, b.width * b.height),
+  );
+  return intersection / smallerArea;
+}
+
+function mergeTileResults(tileResults, width, height) {
+  const candidates = [];
+  tileResults.forEach(({ tile, result }, tileIndex) => {
+    for (const item of result.items || []) {
+      candidates.push({
+        ...item,
+        poly: item.poly.map(([x, y]) => [x + tile.x, y + tile.y]),
+        _tileIndex: tileIndex,
+      });
+    }
+  });
+
+  candidates.sort((a, b) => {
+    const boxA = boundsFromPoly(a.poly);
+    const boxB = boundsFromPoly(b.poly);
+    return boxA.y - boxB.y || boxA.x - boxB.x;
+  });
+
+  const merged = [];
+  for (const candidate of candidates) {
+    const candidateBounds = boundsFromPoly(candidate.poly);
+    const duplicateIndex = merged.findIndex((existing) => {
+      if (existing._tileIndex === candidate._tileIndex) return false;
+      if ((existing.text || "") !== (candidate.text || "")) return false;
+      return overlapRatio(boundsFromPoly(existing.poly), candidateBounds) >= 0.55;
+    });
+    if (duplicateIndex < 0) {
+      merged.push(candidate);
+    } else if ((candidate.score || 0) > (merged[duplicateIndex].score || 0)) {
+      merged[duplicateIndex] = candidate;
+    }
+  }
+
+  const items = merged
+    .map(({ _tileIndex, ...item }) => item)
+    .sort((a, b) => {
+      const boxA = boundsFromPoly(a.poly);
+      const boxB = boundsFromPoly(b.poly);
+      return boxA.y - boxB.y || boxA.x - boxB.x;
+    });
+  const metricTotals = tileResults.reduce(
+    (totals, { result }) => {
+      totals.detMs += result.metrics?.detMs || 0;
+      totals.recMs += result.metrics?.recMs || 0;
+      totals.totalMs += result.metrics?.totalMs || 0;
+      totals.detectedBoxes += result.metrics?.detectedBoxes || 0;
+      return totals;
+    },
+    { detMs: 0, recMs: 0, totalMs: 0, detectedBoxes: 0 },
+  );
+  const first = tileResults[0]?.result;
+  return {
+    image: { width, height },
+    items,
+    metrics: {
+      ...metricTotals,
+      recognizedCount: items.length,
+    },
+    runtime: first?.runtime || null,
   };
 }
 
@@ -763,11 +923,7 @@ async function runOcr() {
   }
 
   setControlsDisabled(true);
-  try {
-    sessionStorage.setItem(RUN_MARKER_KEY, new Date().toISOString());
-  } catch (_storageError) {
-    // 保存できなくてもOCRは続行します。
-  }
+  writeRunMarker("starting");
   ui.resultSection.hidden = true;
   state.pages.forEach((page) => {
     page.result = null;
@@ -789,6 +945,7 @@ async function runOcr() {
       await nextPaint();
       const startedAt = performance.now();
       try {
+        writeRunMarker("preparing-image", page.file.name);
         const normalized = await normalizeImage(page.file);
         if (page.normalizedUrl) URL.revokeObjectURL(page.normalizedUrl);
         page.normalizedBlob = normalized.blob;
@@ -804,11 +961,32 @@ async function runOcr() {
         // On memory-constrained phones, finish decoding and reducing the
         // original camera image before loading the OCR models.
         if (!engine) {
+          writeRunMarker("loading-model", page.file.name);
           await nextPaint();
           engine = await ensureEngine();
         }
-        const [result] = await engine.predict(normalized.blob, getRecognitionParams());
-        page.result = result;
+        const tileResults = [];
+        for (let tileIndex = 0; tileIndex < normalized.tiles.length; tileIndex += 1) {
+          const tile = normalized.tiles[tileIndex];
+          writeRunMarker(
+            "recognizing",
+            `${page.file.name}:${tileIndex + 1}/${normalized.tiles.length}`,
+          );
+          setStatus(
+            `${pageLabel(index)}を分けて読み取っています`,
+            `区画 ${tileIndex + 1} / ${normalized.tiles.length}`,
+            baseProgress + ((tileIndex + 1) / normalized.tiles.length) * (70 / pageCount),
+          );
+          await nextPaint();
+          const [result] = await engine.predict(tile.blob, getRecognitionParams());
+          tileResults.push({ tile, result });
+          await nextPaint();
+        }
+        page.result = mergeTileResults(
+          tileResults,
+          normalized.width,
+          normalized.height,
+        );
       } catch (error) {
         console.error(`OCR failed for ${page.file.name}`, error);
         page.error = error instanceof Error ? error.message : String(error);
@@ -837,11 +1015,7 @@ async function runOcr() {
       100,
       state.pages.some((page) => page.error) ? "warning" : "success",
     );
-    try {
-      sessionStorage.removeItem(RUN_MARKER_KEY);
-    } catch (_storageError) {
-      // 表示結果には影響しません。
-    }
+    clearRunMarker();
     ui.resultSection.scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (error) {
     console.error(error);
@@ -854,11 +1028,7 @@ async function runOcr() {
       "error",
     );
     ui.retryEngineButton.hidden = false;
-    try {
-      sessionStorage.removeItem(RUN_MARKER_KEY);
-    } catch (_storageError) {
-      // エラー表示には影響しません。
-    }
+    clearRunMarker();
   } finally {
     setControlsDisabled(false);
   }
@@ -946,18 +1116,21 @@ function initialize() {
   if (location.protocol === "file:") {
     ui.httpWarning.hidden = false;
   }
-  try {
-    if (sessionStorage.getItem(RUN_MARKER_KEY)) {
-      sessionStorage.removeItem(RUN_MARKER_KEY);
-      setStatus(
-        "前回の処理中にページが再読み込みされました",
-        "端末の負荷が高くなった可能性があります。画像の最大辺を1600pxにして、1枚ずつ試してください。",
-        0,
-        "warning",
-      );
-    }
-  } catch (_storageError) {
-    // セッション保存が使えない場合は通常表示します。
+  const interrupted = readRunMarker();
+  if (interrupted) {
+    const phaseText = {
+      starting: "処理開始直後",
+      "preparing-image": "写真の準備中",
+      "loading-model": "OCRモデルの準備中",
+      recognizing: "文字認識中",
+      unknown: "処理中",
+    }[interrupted.phase] || "処理中";
+    setStatus(
+      "前回の処理中にページが再読み込みされました",
+      `${phaseText}に端末の負荷が高くなりました。今回の表示をお知らせください。`,
+      0,
+      "warning",
+    );
   }
   bindEvents();
   updateSelectedList();
