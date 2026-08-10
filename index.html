@@ -1,0 +1,869 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#edf7f6" />
+    <title>DEKIRU Cards OCR検証</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #253332;
+        --muted: #687876;
+        --line: #d7e5e3;
+        --panel: #ffffff;
+        --paper: #f6faf9;
+        --mint: #3aa79c;
+        --mint-dark: #237e76;
+        --mint-soft: #e8f6f4;
+        --blue: #3979b9;
+        --warning: #a56d18;
+        --danger: #b64646;
+        --shadow: 0 16px 42px rgba(36, 75, 70, 0.11);
+        font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI",
+          "Yu Gothic", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      [hidden] {
+        display: none !important;
+      }
+
+      html {
+        min-height: 100%;
+        background: #eaf4f3;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        color: var(--ink);
+        background:
+          radial-gradient(circle at 12% -8%, rgba(255, 255, 255, 0.95), transparent 34rem),
+          linear-gradient(180deg, #edf8f6 0, #f7fbfa 32rem, #eef5f4 100%);
+      }
+
+      button,
+      input,
+      select {
+        font: inherit;
+      }
+
+      button {
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      .shell {
+        width: min(100%, 1080px);
+        margin: 0 auto;
+        padding: max(20px, env(safe-area-inset-top)) 16px
+          calc(48px + env(safe-area-inset-bottom));
+      }
+
+      .hero {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 2px 2px 20px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        gap: 12px;
+      }
+
+      .brand-mark {
+        position: relative;
+        width: 48px;
+        height: 48px;
+        flex: 0 0 auto;
+      }
+
+      .brand-mark::before,
+      .brand-mark::after,
+      .brand-mark span {
+        content: "";
+        position: absolute;
+        inset: 8px 5px 4px 11px;
+        border: 2px solid #226f69;
+        border-radius: 10px;
+        background: #fff;
+        box-shadow: 0 6px 14px rgba(39, 107, 100, 0.12);
+      }
+
+      .brand-mark::before {
+        transform: translate(-6px, -6px) rotate(-5deg);
+        background: #ccece8;
+      }
+
+      .brand-mark::after {
+        transform: translate(6px, 1px) rotate(5deg);
+        background: #effaf8;
+      }
+
+      .brand-mark span {
+        z-index: 2;
+      }
+
+      .brand-copy {
+        min-width: 0;
+      }
+
+      .brand-copy h1 {
+        margin: 0;
+        font-size: clamp(21px, 5vw, 29px);
+        letter-spacing: 0.015em;
+        white-space: nowrap;
+      }
+
+      .brand-copy p {
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .version {
+        flex: 0 0 auto;
+        padding: 6px 10px;
+        border-radius: 999px;
+        color: var(--mint-dark);
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid rgba(58, 167, 156, 0.24);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .notice,
+      .http-warning {
+        border-radius: 18px;
+        padding: 15px 16px;
+        line-height: 1.65;
+        font-size: 14px;
+      }
+
+      .notice {
+        margin-bottom: 14px;
+        color: #355451;
+        background: rgba(255, 255, 255, 0.7);
+        border: 1px solid rgba(97, 143, 138, 0.2);
+      }
+
+      .notice strong {
+        color: var(--ink);
+      }
+
+      .http-warning {
+        margin-bottom: 14px;
+        color: #714b13;
+        background: #fff7e8;
+        border: 1px solid #edcf98;
+      }
+
+      .panel {
+        margin-top: 14px;
+        padding: 20px;
+        background: rgba(255, 255, 255, 0.94);
+        border: 1px solid rgba(121, 161, 156, 0.2);
+        border-radius: 24px;
+        box-shadow: var(--shadow);
+      }
+
+      .panel h2,
+      .panel h3,
+      .panel p {
+        margin-top: 0;
+      }
+
+      .panel-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+
+      .panel-heading h2 {
+        margin-bottom: 0;
+        font-size: 19px;
+      }
+
+      .count-pill {
+        padding: 5px 10px;
+        color: var(--mint-dark);
+        background: var(--mint-soft);
+        border-radius: 999px;
+        font-weight: 800;
+        font-size: 13px;
+      }
+
+      .upload-actions,
+      .primary-actions,
+      .export-actions {
+        display: grid;
+        gap: 10px;
+      }
+
+      .upload-actions {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .primary-actions {
+        grid-template-columns: minmax(0, 1.6fr) minmax(118px, 0.7fr);
+        margin-top: 16px;
+      }
+
+      .export-actions {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .button {
+        min-height: 48px;
+        padding: 11px 15px;
+        border: 1px solid transparent;
+        border-radius: 15px;
+        font-weight: 800;
+        cursor: pointer;
+        transition: transform 0.12s ease, opacity 0.12s ease, background 0.12s ease;
+      }
+
+      .button:active:not(:disabled) {
+        transform: scale(0.985);
+      }
+
+      .button:disabled {
+        cursor: default;
+        opacity: 0.42;
+      }
+
+      .button-primary {
+        color: #fff;
+        background: linear-gradient(135deg, #39aa9e, #278b82);
+        box-shadow: 0 10px 22px rgba(42, 143, 133, 0.22);
+      }
+
+      .button-soft {
+        color: #276d67;
+        background: #e7f5f3;
+        border-color: #c7e6e2;
+      }
+
+      .button-outline {
+        color: #506562;
+        background: #fff;
+        border-color: #cededc;
+      }
+
+      .upload-hint {
+        margin: 12px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.55;
+      }
+
+      .advanced {
+        margin-top: 16px;
+        border-top: 1px solid var(--line);
+        padding-top: 13px;
+      }
+
+      .advanced summary {
+        cursor: pointer;
+        color: #4f6764;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .settings-grid {
+        display: grid;
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+        gap: 10px;
+        padding-top: 13px;
+      }
+
+      .field {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .field input,
+      .field select {
+        width: 100%;
+        height: 42px;
+        padding: 8px 9px;
+        color: var(--ink);
+        background: #fff;
+        border: 1px solid #cfdedc;
+        border-radius: 11px;
+      }
+
+      .selected-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 10px;
+      }
+
+      .selected-item {
+        display: grid;
+        grid-template-columns: 56px minmax(0, 1fr) 34px;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        padding: 8px;
+        border-radius: 15px;
+        background: var(--paper);
+        border: 1px solid #e0ecea;
+      }
+
+      .selected-thumb {
+        display: grid;
+        place-items: center;
+        width: 56px;
+        height: 56px;
+        overflow: hidden;
+        border-radius: 10px;
+        background: #dfecea;
+        color: #5e7471;
+        font-size: 11px;
+        font-weight: 800;
+      }
+
+      .selected-thumb img {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+
+      .selected-info {
+        display: grid;
+        min-width: 0;
+        gap: 4px;
+      }
+
+      .selected-info strong,
+      .selected-info span {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .selected-info strong {
+        font-size: 13px;
+      }
+
+      .selected-info span {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .icon-button {
+        display: grid;
+        place-items: center;
+        width: 32px;
+        height: 32px;
+        padding: 0 0 2px;
+        color: #607370;
+        background: #fff;
+        border: 1px solid #d4e2e0;
+        border-radius: 50%;
+        font-size: 20px;
+        cursor: pointer;
+      }
+
+      .status-panel {
+        position: relative;
+        overflow: hidden;
+      }
+
+      .status-copy {
+        display: grid;
+        gap: 5px;
+        margin-bottom: 14px;
+      }
+
+      .status-copy strong {
+        font-size: 16px;
+      }
+
+      .status-copy span {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      .progress-row {
+        display: grid;
+        grid-template-columns: 1fr 44px;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .progress-track {
+        height: 9px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #e3efed;
+      }
+
+      .progress-bar {
+        width: 0;
+        height: 100%;
+        border-radius: inherit;
+        background: linear-gradient(90deg, #52baae, #2f9188);
+        transition: width 0.24s ease;
+      }
+
+      .progress-text {
+        color: var(--mint-dark);
+        font-size: 12px;
+        font-weight: 800;
+        text-align: right;
+      }
+
+      .status-panel[data-kind="error"] {
+        border-color: #ebc1c1;
+        background: #fffafa;
+      }
+
+      .status-panel[data-kind="error"] .status-copy strong {
+        color: var(--danger);
+      }
+
+      .status-panel[data-kind="warning"] .status-copy strong {
+        color: var(--warning);
+      }
+
+      .status-panel[data-kind="success"] .status-copy strong {
+        color: var(--mint-dark);
+      }
+
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 16px;
+      }
+
+      .summary-card {
+        display: grid;
+        gap: 5px;
+        min-height: 94px;
+        align-content: center;
+        padding: 13px;
+        border-radius: 16px;
+        background: var(--paper);
+        border: 1px solid #dceae8;
+      }
+
+      .summary-card > span,
+      .summary-card small {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .summary-card strong {
+        font-size: 18px;
+      }
+
+      .result-tools {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin: 4px 0 16px;
+        padding: 11px 12px;
+        border-radius: 15px;
+        background: #f6faf9;
+        border: 1px solid #dce9e7;
+      }
+
+      .switch-label {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        font-size: 13px;
+        font-weight: 700;
+      }
+
+      .switch-label input {
+        width: 20px;
+        height: 20px;
+        accent-color: var(--mint);
+      }
+
+      .result-card {
+        margin-top: 18px;
+        padding: 16px;
+        border-radius: 20px;
+        background: #fff;
+        border: 1px solid #dbe8e6;
+      }
+
+      .result-heading {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 13px;
+      }
+
+      .result-heading h3 {
+        margin: 0;
+        overflow-wrap: anywhere;
+        font-size: 16px;
+      }
+
+      .result-heading p {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .ocr-canvas-wrap {
+        overflow: auto;
+        border-radius: 14px;
+        border: 1px solid #d2e0de;
+        background:
+          linear-gradient(45deg, #f3f7f6 25%, transparent 25%) 0 0 / 16px 16px,
+          linear-gradient(45deg, transparent 75%, #f3f7f6 75%) 0 0 / 16px 16px,
+          #fff;
+      }
+
+      .ocr-canvas {
+        display: block;
+        width: 100%;
+        height: auto;
+      }
+
+      .confidence-note {
+        margin: 11px 0 8px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.55;
+      }
+
+      .table-scroll {
+        width: 100%;
+        overflow-x: auto;
+        border-radius: 13px;
+        border: 1px solid #dce8e6;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .result-table {
+        width: 100%;
+        min-width: 650px;
+        border-collapse: collapse;
+        font-size: 12px;
+      }
+
+      .result-table th,
+      .result-table td {
+        padding: 10px;
+        border-bottom: 1px solid #e2eceb;
+        text-align: left;
+        vertical-align: top;
+      }
+
+      .result-table th {
+        position: sticky;
+        top: 0;
+        color: #57706d;
+        background: #f4f9f8;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .result-table tbody tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .number-badge {
+        display: grid;
+        place-items: center;
+        width: 26px;
+        height: 22px;
+        color: #fff;
+        border-radius: 7px;
+        font-weight: 800;
+      }
+
+      .recognized-text {
+        min-width: 270px;
+        color: #1e302e;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .position-cell {
+        white-space: nowrap;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+
+      .page-error {
+        padding: 14px;
+        color: var(--danger);
+        border-radius: 13px;
+        background: #fff5f5;
+        border: 1px solid #efcccc;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+
+      .result-footer {
+        display: grid;
+        gap: 10px;
+        margin-top: 18px;
+        padding-top: 17px;
+        border-top: 1px solid var(--line);
+      }
+
+      .result-footer p,
+      footer p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.6;
+      }
+
+      footer {
+        padding: 22px 4px 0;
+        text-align: center;
+      }
+
+      @media (max-width: 760px) {
+        .shell {
+          padding-inline: 12px;
+        }
+
+        .panel {
+          padding: 16px;
+          border-radius: 21px;
+        }
+
+        .settings-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .summary-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .selected-list {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 430px) {
+        .hero {
+          align-items: flex-start;
+        }
+
+        .brand-mark {
+          width: 42px;
+          height: 42px;
+        }
+
+        .brand-copy h1 {
+          font-size: 20px;
+        }
+
+        .brand-copy p {
+          font-size: 10px;
+        }
+
+        .version {
+          padding: 5px 8px;
+          font-size: 10px;
+        }
+
+        .upload-actions,
+        .primary-actions,
+        .export-actions {
+          grid-template-columns: 1fr;
+        }
+
+        .upload-actions {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .button {
+          min-height: 46px;
+          padding-inline: 10px;
+          font-size: 13px;
+        }
+
+        .summary-card {
+          min-height: 86px;
+        }
+
+        .result-card {
+          padding: 12px;
+          border-radius: 17px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="shell">
+      <header class="hero">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true"><span></span></div>
+          <div class="brand-copy">
+            <h1>DEKIRU Cards OCR検証</h1>
+            <p>写真をカード化する前の読み取り精度チェック</p>
+          </div>
+        </div>
+        <span id="versionLabel" class="version">検証版</span>
+      </header>
+
+      <div class="notice">
+        <strong>これは検証専用ページです。</strong><br />
+        写真を文字認識して、文字・位置・処理時間を表示します。教材やカードへの登録は行いません。
+        写真は外部のAIサービスへ送らず、この端末のブラウザ内で処理します。
+      </div>
+
+      <div id="httpWarning" class="http-warning" hidden>
+        <strong>ページは開けていますが、このままでは文字認識を実行できません。</strong><br />
+        PaddleOCR.jsはHTTP(S)での表示が必要です。GitHub Pagesへ置いてから開いてください。
+      </div>
+
+      <section class="panel" aria-labelledby="uploadTitle">
+        <div class="panel-heading">
+          <h2 id="uploadTitle">1. 写真を選ぶ</h2>
+        </div>
+        <input
+          id="libraryInput"
+          type="file"
+          accept="image/*,.heic,.heif"
+          multiple
+          hidden
+        />
+        <input
+          id="cameraInput"
+          type="file"
+          accept="image/*"
+          capture="environment"
+          hidden
+        />
+        <div class="upload-actions">
+          <button id="cameraButton" class="button button-soft" type="button">写真を撮る</button>
+          <button id="libraryButton" class="button button-soft" type="button">写真を選択</button>
+        </div>
+        <p class="upload-hint">
+          JPG・PNG・HEICに対応。まとめて最大12枚まで選べます。最初は1〜2枚で速度を確認するのがおすすめです。
+        </p>
+
+        <details class="advanced">
+          <summary>読み取り設定（通常は変更不要）</summary>
+          <div class="settings-grid">
+            <label class="field">
+              画像の最大辺
+              <select id="maxSide">
+                <option value="2000">2000px（軽い）</option>
+                <option value="2600" selected>2600px（標準）</option>
+                <option value="3200">3200px（細かい文字）</option>
+              </select>
+            </label>
+            <label class="field">
+              文字検出
+              <input id="detThresh" type="number" min="0" max="1" step="0.05" value="0.30" />
+            </label>
+            <label class="field">
+              枠の判定
+              <input id="boxThresh" type="number" min="0" max="1" step="0.05" value="0.60" />
+            </label>
+            <label class="field">
+              枠の広がり
+              <input id="unclipRatio" type="number" min="0.5" max="3" step="0.1" value="1.5" />
+            </label>
+            <label class="field">
+              認識下限
+              <input id="recScoreThresh" type="number" min="0" max="1" step="0.05" value="0.10" />
+            </label>
+          </div>
+        </details>
+      </section>
+
+      <section id="selectedSection" class="panel" aria-labelledby="selectedTitle" hidden>
+        <div class="panel-heading">
+          <h2 id="selectedTitle">選択した写真</h2>
+          <span id="selectedCount" class="count-pill">0枚</span>
+        </div>
+        <div id="selectedList" class="selected-list"></div>
+        <div class="primary-actions">
+          <button id="startButton" class="button button-primary" type="button" disabled>
+            文字認識を始める
+          </button>
+          <button id="clearButton" class="button button-outline" type="button" disabled>
+            選び直す
+          </button>
+        </div>
+      </section>
+
+      <section id="statusPanel" class="panel status-panel" aria-live="polite" hidden>
+        <div class="status-copy">
+          <strong id="statusTitle">準備しています</strong>
+          <span id="statusDetail"></span>
+        </div>
+        <div class="progress-row">
+          <div class="progress-track" aria-hidden="true">
+            <div id="progressBar" class="progress-bar"></div>
+          </div>
+          <span id="progressText" class="progress-text">0%</span>
+        </div>
+        <button
+          id="retryEngineButton"
+          class="button button-outline"
+          style="margin-top: 13px"
+          type="button"
+          hidden
+        >
+          もう一度試す
+        </button>
+      </section>
+
+      <section id="resultSection" class="panel" aria-labelledby="resultTitle" hidden>
+        <div class="panel-heading">
+          <h2 id="resultTitle">2. 認識結果を確認</h2>
+        </div>
+        <div id="summaryGrid" class="summary-grid"></div>
+        <div class="result-tools">
+          <label class="switch-label">
+            <input id="toggleBoxes" type="checkbox" checked />
+            画像上の認識枠を表示
+          </label>
+        </div>
+        <div id="results"></div>
+        <div class="result-footer">
+          <p>
+            JSONには画像を含めず、認識文字・自信度・座標・処理時間だけを保存します。次の設計判断や比較検証に使えます。
+          </p>
+          <div class="export-actions">
+            <button id="copyJsonButton" class="button button-soft" type="button">
+              結果をコピー
+            </button>
+            <button id="downloadJsonButton" class="button button-outline" type="button">
+              JSONを保存
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <footer>
+        <p>
+          OCR: PaddleOCR.js / PP-OCRv5（Apache-2.0）<br />
+          初回はモデルと実行ファイルをインターネットから読み込みます。
+        </p>
+      </footer>
+    </main>
+    <script type="module" src="./ocr-lab.js"></script>
+  </body>
+</html>
