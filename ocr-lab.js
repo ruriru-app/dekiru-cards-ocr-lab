@@ -1,4 +1,4 @@
-const APP_VERSION = "0.2.3";
+const APP_VERSION = "0.2.4";
 const OCR_SDK_VERSION = "0.4.2";
 const MODEL_NAME = "PP-OCRv5_mobile";
 const MAX_FILES = 12;
@@ -211,6 +211,7 @@ const state = {
   engineSummary: null,
   engineMode: "worker",
   running: false,
+  cropEditor: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -243,6 +244,14 @@ const ui = {
   unclipRatio: $("unclipRatio"),
   recScoreThresh: $("recScoreThresh"),
   retryEngineButton: $("retryEngineButton"),
+  cropDialog: $("cropDialog"),
+  cropStage: $("cropStage"),
+  cropImage: $("cropImage"),
+  cropBox: $("cropBox"),
+  cropApplyAll: $("cropApplyAll"),
+  cropResetButton: $("cropResetButton"),
+  cropCancelButton: $("cropCancelButton"),
+  cropSaveButton: $("cropSaveButton"),
 };
 
 function makeId() {
@@ -260,6 +269,21 @@ function formatSize(bytes) {
   if (!Number.isFinite(bytes)) return "—";
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
   return `${Math.max(1, Math.round(bytes / 1024))}KB`;
+}
+
+function errorText(error, fallback = "処理に失敗しました。") {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === "string" && error) return error;
+  if (error && typeof error === "object") {
+    if (typeof error.message === "string" && error.message) return error.message;
+    try {
+      const serialized = JSON.stringify(error);
+      if (serialized && serialized !== "{}") return serialized;
+    } catch (_error) {
+      // Use the friendly fallback below.
+    }
+  }
+  return fallback;
 }
 
 function setStatus(title, detail, progress = 0, kind = "normal") {
@@ -294,6 +318,270 @@ function isHeic(file) {
     name.endsWith(".heic") ||
     name.endsWith(".heif")
   );
+}
+
+function readUint16(view, offset, littleEndian) {
+  if (offset < 0 || offset + 2 > view.byteLength) return null;
+  return view.getUint16(offset, littleEndian);
+}
+
+function readUint32(view, offset, littleEndian = false) {
+  if (offset < 0 || offset + 4 > view.byteLength) return null;
+  return view.getUint32(offset, littleEndian);
+}
+
+function parseExifOrientation(view, start, length) {
+  if (length < 14 || start + length > view.byteLength) return 1;
+  if (
+    view.getUint8(start) !== 0x45 ||
+    view.getUint8(start + 1) !== 0x78 ||
+    view.getUint8(start + 2) !== 0x69 ||
+    view.getUint8(start + 3) !== 0x66
+  ) {
+    return 1;
+  }
+  const tiff = start + 6;
+  const byteOrder = readUint16(view, tiff, false);
+  const littleEndian = byteOrder === 0x4949;
+  if (!littleEndian && byteOrder !== 0x4d4d) return 1;
+  const ifdOffset = readUint32(view, tiff + 4, littleEndian);
+  if (ifdOffset == null) return 1;
+  const directory = tiff + ifdOffset;
+  const count = readUint16(view, directory, littleEndian) || 0;
+  for (let index = 0; index < count; index += 1) {
+    const entry = directory + 2 + index * 12;
+    const tag = readUint16(view, entry, littleEndian);
+    if (tag !== 0x0112) continue;
+    return readUint16(view, entry + 8, littleEndian) || 1;
+  }
+  return 1;
+}
+
+function parseJpegMetadata(view) {
+  if (view.byteLength < 4 || view.getUint16(0, false) !== 0xffd8) return null;
+  let offset = 2;
+  let width = null;
+  let height = null;
+  let orientation = 1;
+  const sofMarkers = new Set([
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7,
+    0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+  ]);
+  while (offset + 4 <= view.byteLength) {
+    if (view.getUint8(offset) !== 0xff) {
+      offset += 1;
+      continue;
+    }
+    while (offset < view.byteLength && view.getUint8(offset) === 0xff) offset += 1;
+    const marker = view.getUint8(offset);
+    offset += 1;
+    if (marker === 0xd9 || marker === 0xda) break;
+    if (marker >= 0xd0 && marker <= 0xd7) continue;
+    const segmentLength = readUint16(view, offset, false);
+    if (!segmentLength || segmentLength < 2 || offset + segmentLength > view.byteLength) break;
+    const segmentStart = offset + 2;
+    const payloadLength = segmentLength - 2;
+    if (marker === 0xe1) {
+      orientation = parseExifOrientation(view, segmentStart, payloadLength);
+    } else if (sofMarkers.has(marker) && payloadLength >= 5) {
+      height = readUint16(view, segmentStart + 1, false);
+      width = readUint16(view, segmentStart + 3, false);
+    }
+    if (width && height && orientation !== 1) break;
+    offset += segmentLength;
+  }
+  if (!width || !height) return null;
+  return { width, height, orientation };
+}
+
+function parsePngMetadata(view) {
+  if (view.byteLength < 24) return null;
+  const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+  if (!signature.every((value, index) => view.getUint8(index) === value)) return null;
+  const width = readUint32(view, 16, false);
+  const height = readUint32(view, 20, false);
+  return width && height ? { width, height, orientation: 1 } : null;
+}
+
+function parseGifMetadata(view) {
+  if (view.byteLength < 10) return null;
+  const header = String.fromCharCode(...new Uint8Array(view.buffer, view.byteOffset, 6));
+  if (header !== "GIF87a" && header !== "GIF89a") return null;
+  return {
+    width: view.getUint16(6, true),
+    height: view.getUint16(8, true),
+    orientation: 1,
+  };
+}
+
+function parseHeicMetadata(view) {
+  let best = null;
+  for (let offset = 4; offset + 16 <= view.byteLength; offset += 1) {
+    if (
+      view.getUint8(offset) !== 0x69 ||
+      view.getUint8(offset + 1) !== 0x73 ||
+      view.getUint8(offset + 2) !== 0x70 ||
+      view.getUint8(offset + 3) !== 0x65
+    ) {
+      continue;
+    }
+    const width = readUint32(view, offset + 8, false);
+    const height = readUint32(view, offset + 12, false);
+    if (!width || !height || width > 30000 || height > 30000) continue;
+    if (!best || width * height > best.width * best.height) {
+      best = { width, height, orientation: 1 };
+    }
+  }
+  return best;
+}
+
+async function readImageMetadata(file) {
+  const scanBytes = Math.min(file.size, isHeic(file) ? 4 * 1024 * 1024 : 768 * 1024);
+  const buffer = await file.slice(0, scanBytes).arrayBuffer();
+  const view = new DataView(buffer);
+  return (
+    parsePngMetadata(view) ||
+    parseJpegMetadata(view) ||
+    parseGifMetadata(view) ||
+    (isHeic(file) ? parseHeicMetadata(view) : null)
+  );
+}
+
+function displayDimensions(metadata) {
+  if (!metadata) return null;
+  const swapsAxes = metadata.orientation >= 5 && metadata.orientation <= 8;
+  return swapsAxes
+    ? { width: metadata.height, height: metadata.width }
+    : { width: metadata.width, height: metadata.height };
+}
+
+async function decodeReducedImage(file, width, height) {
+  if (globalThis.ImageDecoder && file.type) {
+    try {
+      const supported = await globalThis.ImageDecoder.isTypeSupported(file.type);
+      if (supported) {
+        const decoder = new globalThis.ImageDecoder({
+          data: file.stream(),
+          type: file.type,
+          desiredWidth: width,
+          desiredHeight: height,
+          preferAnimation: false,
+        });
+        const decoded = await decoder.decode({ frameIndex: 0, completeFramesOnly: true });
+        const frame = decoded.image;
+        return {
+          drawable: frame,
+          width: frame.displayWidth || frame.codedWidth || width,
+          height: frame.displayHeight || frame.codedHeight || height,
+          close: () => {
+            frame.close();
+            decoder.close();
+          },
+        };
+      }
+    } catch (error) {
+      console.warn("ImageDecoder resize was unavailable.", error);
+    }
+  }
+
+  if (typeof createImageBitmap !== "function") {
+    throw new Error("このブラウザでは写真を安全な大きさで開けませんでした。");
+  }
+  const bitmap = await createImageBitmap(file, {
+    imageOrientation: "from-image",
+    resizeWidth: width,
+    resizeHeight: height,
+    resizeQuality: "high",
+  });
+  return {
+    drawable: bitmap,
+    width: bitmap.width,
+    height: bitmap.height,
+    close: () => bitmap.close(),
+  };
+}
+
+async function prepareInputImage(file) {
+  const metadata = await readImageMetadata(file).catch(() => null);
+  const display = displayDimensions(metadata);
+  const targetMaxSide = Number(ui.maxSide.value) || (IS_IOS ? 1500 : 2600);
+
+  if (display && typeof createImageBitmap === "function") {
+    const scale = Math.min(1, targetMaxSide / Math.max(display.width, display.height));
+    const width = Math.max(1, Math.round(display.width * scale));
+    const height = Math.max(1, Math.round(display.height * scale));
+    try {
+      const bitmap = await decodeReducedImage(file, width, height);
+      const canvas = document.createElement("canvas");
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) {
+        bitmap.close();
+        throw new Error("画像を軽くする領域を作成できませんでした。");
+      }
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(bitmap.drawable, 0, 0);
+      bitmap.close();
+      const blob = await canvasToBlob(canvas, "image/jpeg", 0.93);
+      const prepared = {
+        blob,
+        width: canvas.width,
+        height: canvas.height,
+        sourceWidth: display.width,
+        sourceHeight: display.height,
+        reducedBeforeDecode: scale < 1,
+        convertedFromHeic: false,
+      };
+      canvas.width = 1;
+      canvas.height = 1;
+      return prepared;
+    } catch (error) {
+      console.warn("Decode-time resize was unavailable; using compatibility path.", error);
+    }
+  }
+
+  let sourceBlob = file;
+  let convertedFromHeic = false;
+  let decoded;
+  try {
+    decoded = await decodeBlob(sourceBlob);
+  } catch (nativeError) {
+    if (!isHeic(file)) throw nativeError;
+    sourceBlob = await convertHeic(file);
+    convertedFromHeic = true;
+    decoded = await decodeBlob(sourceBlob);
+  }
+  const scale = Math.min(1, targetMaxSide / Math.max(decoded.width, decoded.height));
+  const width = Math.max(1, Math.round(decoded.width * scale));
+  const height = Math.max(1, Math.round(decoded.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d", { alpha: false });
+  if (!context) {
+    decoded.close();
+    throw new Error("画像を軽くする領域を作成できませんでした。");
+  }
+  context.fillStyle = "#ffffff";
+  context.fillRect(0, 0, width, height);
+  context.drawImage(decoded.drawable, 0, 0, width, height);
+  const sourceWidth = decoded.width;
+  const sourceHeight = decoded.height;
+  decoded.close();
+  const blob = await canvasToBlob(canvas, "image/jpeg", 0.93);
+  canvas.width = 1;
+  canvas.height = 1;
+  return {
+    blob,
+    width,
+    height,
+    sourceWidth,
+    sourceHeight,
+    reducedBeforeDecode: false,
+    convertedFromHeic,
+  };
 }
 
 async function imageElementFromBlob(blob) {
@@ -408,24 +696,20 @@ async function makeOcrTiles(canvas) {
   return tiles;
 }
 
-async function normalizeImage(file) {
-  let sourceBlob = file;
-  let convertedFromHeic = false;
-  let decoded;
-
-  try {
-    decoded = await decodeBlob(sourceBlob);
-  } catch (nativeError) {
-    if (!isHeic(file)) throw nativeError;
-    sourceBlob = await convertHeic(file);
-    convertedFromHeic = true;
-    decoded = await decodeBlob(sourceBlob);
-  }
-
+async function normalizeImage(page) {
+  const sourceBlob = page.preparedBlob || page.file;
+  const decoded = await decodeBlob(sourceBlob);
+  const crop = page.crop || { left: 0, top: 0, right: 1, bottom: 1 };
+  const sourceX = Math.max(0, Math.round(decoded.width * crop.left));
+  const sourceY = Math.max(0, Math.round(decoded.height * crop.top));
+  const sourceRight = Math.min(decoded.width, Math.round(decoded.width * crop.right));
+  const sourceBottom = Math.min(decoded.height, Math.round(decoded.height * crop.bottom));
+  const sourceWidth = Math.max(1, sourceRight - sourceX);
+  const sourceHeight = Math.max(1, sourceBottom - sourceY);
   const maxSide = Number(ui.maxSide.value) || 2600;
-  const scale = Math.min(1, maxSide / Math.max(decoded.width, decoded.height));
-  const width = Math.max(1, Math.round(decoded.width * scale));
-  const height = Math.max(1, Math.round(decoded.height * scale));
+  const scale = Math.min(1, maxSide / Math.max(sourceWidth, sourceHeight));
+  const width = Math.max(1, Math.round(sourceWidth * scale));
+  const height = Math.max(1, Math.round(sourceHeight * scale));
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
@@ -438,7 +722,17 @@ async function normalizeImage(file) {
   context.fillRect(0, 0, width, height);
   context.imageSmoothingEnabled = true;
   context.imageSmoothingQuality = "high";
-  context.drawImage(decoded.drawable, 0, 0, width, height);
+  context.drawImage(
+    decoded.drawable,
+    sourceX,
+    sourceY,
+    sourceWidth,
+    sourceHeight,
+    0,
+    0,
+    width,
+    height,
+  );
   decoded.close();
 
   const normalizedBlob = await canvasToBlob(canvas);
@@ -450,9 +744,12 @@ async function normalizeImage(file) {
     tiles,
     width,
     height,
-    originalWidth: decoded.width,
-    originalHeight: decoded.height,
-    convertedFromHeic,
+    originalWidth: page.preparedInfo?.sourceWidth || decoded.width,
+    originalHeight: page.preparedInfo?.sourceHeight || decoded.height,
+    preparedWidth: decoded.width,
+    preparedHeight: decoded.height,
+    crop,
+    convertedFromHeic: Boolean(page.preparedInfo?.convertedFromHeic),
   };
 }
 
@@ -466,6 +763,149 @@ function pageLabel(index) {
   return `${index + 1}ページ目`;
 }
 
+function cloneCrop(crop) {
+  return {
+    left: crop.left,
+    top: crop.top,
+    right: crop.right,
+    bottom: crop.bottom,
+  };
+}
+
+function updateCropBoxPosition() {
+  const editor = state.cropEditor;
+  if (!editor || ui.cropDialog.hidden || !ui.cropImage.complete) return;
+  const stageRect = ui.cropStage.getBoundingClientRect();
+  const imageRect = ui.cropImage.getBoundingClientRect();
+  if (!imageRect.width || !imageRect.height) return;
+  const crop = editor.draft;
+  ui.cropBox.style.left = `${imageRect.left - stageRect.left + crop.left * imageRect.width}px`;
+  ui.cropBox.style.top = `${imageRect.top - stageRect.top + crop.top * imageRect.height}px`;
+  ui.cropBox.style.width = `${(crop.right - crop.left) * imageRect.width}px`;
+  ui.cropBox.style.height = `${(crop.bottom - crop.top) * imageRect.height}px`;
+}
+
+function openCropEditor(pageId) {
+  if (state.running) return;
+  const page = state.pages.find((item) => item.id === pageId);
+  if (!page) return;
+  state.cropEditor = {
+    pageId,
+    draft: cloneCrop(page.crop),
+    drag: null,
+  };
+  ui.cropApplyAll.checked = state.pages.length > 1;
+  ui.cropDialog.hidden = false;
+  document.body.style.overflow = "hidden";
+  ui.cropImage.onload = () => requestAnimationFrame(updateCropBoxPosition);
+  ui.cropImage.src = page.previewUrl;
+  if (ui.cropImage.complete) requestAnimationFrame(updateCropBoxPosition);
+}
+
+function closeCropEditor() {
+  ui.cropDialog.hidden = true;
+  ui.cropImage.removeAttribute("src");
+  state.cropEditor = null;
+  document.body.style.overflow = "";
+}
+
+function resetCropEditor() {
+  if (!state.cropEditor) return;
+  state.cropEditor.draft = { left: 0, top: 0, right: 1, bottom: 1 };
+  updateCropBoxPosition();
+}
+
+function invalidatePageResult(page) {
+  if (page.normalizedUrl) URL.revokeObjectURL(page.normalizedUrl);
+  page.normalizedUrl = null;
+  page.normalizedBlob = null;
+  page.result = null;
+  page.error = null;
+  page.imageInfo = null;
+}
+
+function saveCropEditor() {
+  const editor = state.cropEditor;
+  if (!editor) return;
+  const crop = Object.fromEntries(
+    Object.entries(editor.draft).map(([key, value]) => [key, Math.round(value * 10000) / 10000]),
+  );
+  const targets = ui.cropApplyAll.checked
+    ? state.pages
+    : state.pages.filter((page) => page.id === editor.pageId);
+  for (const page of targets) {
+    page.crop = cloneCrop(crop);
+    invalidatePageResult(page);
+  }
+  ui.resultSection.hidden = true;
+  closeCropEditor();
+  updateSelectedList();
+  setStatus(
+    "読み取り範囲を保存しました",
+    ui.cropApplyAll.checked
+      ? "選択中の写真すべてに同じ範囲を設定しました。"
+      : "この写真に読み取り範囲を設定しました。",
+    100,
+    "success",
+  );
+}
+
+function startCropDrag(event) {
+  const editor = state.cropEditor;
+  if (!editor) return;
+  const imageRect = ui.cropImage.getBoundingClientRect();
+  if (!imageRect.width || !imageRect.height) return;
+  const handle = event.target.closest("[data-handle]");
+  editor.drag = {
+    pointerId: event.pointerId,
+    mode: handle?.dataset.handle || "move",
+    startX: event.clientX,
+    startY: event.clientY,
+    imageWidth: imageRect.width,
+    imageHeight: imageRect.height,
+    crop: cloneCrop(editor.draft),
+  };
+  ui.cropBox.setPointerCapture(event.pointerId);
+  event.preventDefault();
+}
+
+function moveCropDrag(event) {
+  const editor = state.cropEditor;
+  const drag = editor?.drag;
+  if (!drag || drag.pointerId !== event.pointerId) return;
+  const dx = (event.clientX - drag.startX) / drag.imageWidth;
+  const dy = (event.clientY - drag.startY) / drag.imageHeight;
+  const minimum = 0.08;
+  const next = cloneCrop(drag.crop);
+  const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
+
+  if (drag.mode === "move") {
+    const width = drag.crop.right - drag.crop.left;
+    const height = drag.crop.bottom - drag.crop.top;
+    next.left = clamp(drag.crop.left + dx, 0, 1 - width);
+    next.top = clamp(drag.crop.top + dy, 0, 1 - height);
+    next.right = next.left + width;
+    next.bottom = next.top + height;
+  } else {
+    if (drag.mode.includes("n")) next.top = clamp(drag.crop.top + dy, 0, drag.crop.bottom - minimum);
+    if (drag.mode.includes("s")) next.bottom = clamp(drag.crop.bottom + dy, drag.crop.top + minimum, 1);
+    if (drag.mode.includes("w")) next.left = clamp(drag.crop.left + dx, 0, drag.crop.right - minimum);
+    if (drag.mode.includes("e")) next.right = clamp(drag.crop.right + dx, drag.crop.left + minimum, 1);
+  }
+  editor.draft = next;
+  updateCropBoxPosition();
+  event.preventDefault();
+}
+
+function endCropDrag(event) {
+  const editor = state.cropEditor;
+  if (!editor?.drag || editor.drag.pointerId !== event.pointerId) return;
+  editor.drag = null;
+  if (ui.cropBox.hasPointerCapture(event.pointerId)) {
+    ui.cropBox.releasePointerCapture(event.pointerId);
+  }
+}
+
 function updateSelectedList() {
   ui.selectedCount.textContent = `${state.pages.length}枚`;
   ui.selectedSection.hidden = state.pages.length === 0;
@@ -477,32 +917,36 @@ function updateSelectedList() {
 
     const thumb = document.createElement("div");
     thumb.className = "selected-thumb";
-    if (IS_IOS) {
+    const image = document.createElement("img");
+    image.src = page.previewUrl;
+    image.alt = `${pageLabel(index)}のプレビュー`;
+    image.addEventListener("error", () => {
       thumb.classList.add("is-unavailable");
+      image.remove();
       const fallback = document.createElement("span");
-      fallback.textContent = isHeic(page.file) ? "HEIC" : "写真";
+      fallback.textContent = "写真";
       thumb.append(fallback);
-    } else {
-      const image = document.createElement("img");
-      image.src = page.previewUrl;
-      image.alt = `${pageLabel(index)}のプレビュー`;
-      image.addEventListener("error", () => {
-        thumb.classList.add("is-unavailable");
-        image.remove();
-        const fallback = document.createElement("span");
-        fallback.textContent = isHeic(page.file) ? "HEIC" : "画像";
-        thumb.append(fallback);
-      });
-      thumb.append(image);
-    }
+    });
+    thumb.append(image);
 
     const info = document.createElement("div");
     info.className = "selected-info";
     const name = document.createElement("strong");
     name.textContent = page.file.name || pageLabel(index);
     const meta = document.createElement("span");
-    meta.textContent = `${pageLabel(index)}・${formatSize(page.file.size)}`;
-    info.append(name, meta);
+    const prepared = page.preparedInfo;
+    const cropIsFull =
+      page.crop.left === 0 && page.crop.top === 0 &&
+      page.crop.right === 1 && page.crop.bottom === 1;
+    meta.textContent = prepared
+      ? `${pageLabel(index)}・${prepared.width}×${prepared.height}px・${cropIsFull ? "全体" : "範囲指定済み"}`
+      : `${pageLabel(index)}・${formatSize(page.file.size)}`;
+    const cropButton = document.createElement("button");
+    cropButton.type = "button";
+    cropButton.className = "crop-open-button";
+    cropButton.textContent = cropIsFull ? "読み取り範囲を調整" : "読み取り範囲を再調整";
+    cropButton.addEventListener("click", () => openCropEditor(page.id));
+    info.append(name, meta, cropButton);
 
     const remove = document.createElement("button");
     remove.type = "button";
@@ -519,6 +963,7 @@ function updateSelectedList() {
 
 function removePage(id) {
   if (state.running) return;
+  if (state.cropEditor?.pageId === id) closeCropEditor();
   const index = state.pages.findIndex((page) => page.id === id);
   if (index < 0) return;
   const [page] = state.pages.splice(index, 1);
@@ -531,26 +976,66 @@ function removePage(id) {
   }
 }
 
-function addFiles(fileList) {
+async function addFiles(fileList) {
   const incoming = Array.from(fileList || []).filter((file) =>
     file.type.startsWith("image/") || isHeic(file),
   );
   const remaining = Math.max(0, MAX_FILES - state.pages.length);
-  incoming.slice(0, remaining).forEach((file) => {
-    state.pages.push({
-      id: makeId(),
-      file,
-      previewUrl: URL.createObjectURL(file),
-      normalizedUrl: null,
-      normalizedBlob: null,
-      result: null,
-      error: null,
-      wallMs: null,
-      imageInfo: null,
-    });
-  });
+  const accepted = incoming.slice(0, remaining);
+  if (!accepted.length) return;
+  setControlsDisabled(true);
+  setStatus(
+    "写真を安全な大きさにしています",
+    "元写真をフルサイズ表示せず、文字認識用の軽い画像を作っています。",
+    4,
+  );
+  for (let index = 0; index < accepted.length; index += 1) {
+    const file = accepted[index];
+    writeRunMarker("preparing-upload", file.name);
+    setStatus(
+      "写真を安全な大きさにしています",
+      `${file.name}（${index + 1} / ${accepted.length}枚）`,
+      4 + ((index + 1) / accepted.length) * 82,
+    );
+    await nextPaint();
+    try {
+      const prepared = await prepareInputImage(file);
+      state.pages.push({
+        id: makeId(),
+        file,
+        preparedBlob: prepared.blob,
+        preparedInfo: prepared,
+        previewUrl: URL.createObjectURL(prepared.blob),
+        crop: { left: 0, top: 0, right: 1, bottom: 1 },
+        normalizedUrl: null,
+        normalizedBlob: null,
+        result: null,
+        error: null,
+        wallMs: null,
+        imageInfo: null,
+      });
+    } catch (error) {
+      console.error(`Image preparation failed for ${file.name}`, error);
+      setStatus(
+        "写真を準備できませんでした",
+        `${file.name}：${errorText(error, "この画像形式を安全に開けませんでした。")}`,
+        0,
+        "error",
+      );
+    }
+  }
+  clearRunMarker();
+  setControlsDisabled(false);
   updateSelectedList();
   ui.resultSection.hidden = true;
+  if (state.pages.length) {
+    setStatus(
+      "写真の準備ができました",
+      "必要な部分だけ読み取る場合は「読み取り範囲を調整」を押してください。",
+      100,
+      "success",
+    );
+  }
   if (incoming.length > remaining) {
     setStatus(
       "追加できるのは12枚までです",
@@ -946,7 +1431,7 @@ async function runOcr() {
       const startedAt = performance.now();
       try {
         writeRunMarker("preparing-image", page.file.name);
-        const normalized = await normalizeImage(page.file);
+        const normalized = await normalizeImage(page);
         if (page.normalizedUrl) URL.revokeObjectURL(page.normalizedUrl);
         page.normalizedBlob = normalized.blob;
         page.normalizedUrl = URL.createObjectURL(normalized.blob);
@@ -955,8 +1440,11 @@ async function runOcr() {
           originalHeight: normalized.originalHeight,
           width: normalized.width,
           height: normalized.height,
+          preparedWidth: normalized.preparedWidth,
+          preparedHeight: normalized.preparedHeight,
           normalizedBytes: normalized.blob.size,
           convertedFromHeic: normalized.convertedFromHeic,
+          crop: normalized.crop,
         };
         // On memory-constrained phones, finish decoding and reducing the
         // original camera image before loading the OCR models.
@@ -989,7 +1477,7 @@ async function runOcr() {
         );
       } catch (error) {
         console.error(`OCR failed for ${page.file.name}`, error);
-        page.error = error instanceof Error ? error.message : String(error);
+        page.error = errorText(error);
       }
       page.wallMs = performance.now() - startedAt;
       setStatus(
@@ -1020,7 +1508,7 @@ async function runOcr() {
   } catch (error) {
     console.error(error);
     state.engineReady = false;
-    const message = error instanceof Error ? error.message : String(error);
+    const message = errorText(error);
     setStatus(
       "文字認識を開始できませんでした",
       message,
@@ -1072,6 +1560,7 @@ function downloadJson() {
 
 function clearAll() {
   if (state.running) return;
+  if (!ui.cropDialog.hidden) closeCropEditor();
   state.pages.forEach((page) => {
     URL.revokeObjectURL(page.previewUrl);
     if (page.normalizedUrl) URL.revokeObjectURL(page.normalizedUrl);
@@ -1106,12 +1595,30 @@ function bindEvents() {
     ui.retryEngineButton.hidden = true;
     runOcr();
   });
+  ui.cropResetButton.addEventListener("click", resetCropEditor);
+  ui.cropCancelButton.addEventListener("click", closeCropEditor);
+  ui.cropSaveButton.addEventListener("click", saveCropEditor);
+  ui.cropBox.addEventListener("pointerdown", startCropDrag);
+  ui.cropBox.addEventListener("pointermove", moveCropDrag);
+  ui.cropBox.addEventListener("pointerup", endCropDrag);
+  ui.cropBox.addEventListener("pointercancel", endCropDrag);
+  ui.cropDialog.addEventListener("click", (event) => {
+    if (event.target === ui.cropDialog) closeCropEditor();
+  });
+  window.addEventListener("resize", updateCropBoxPosition);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !ui.cropDialog.hidden) closeCropEditor();
+  });
 }
 
 function initialize() {
   $("versionLabel").textContent = `検証版 v${APP_VERSION}`;
   if (IS_IOS) {
-    ui.maxSide.value = "1600";
+    ui.maxSide.value = "1500";
+    // Asking iOS for JPEG lets Photos provide a lightweight compatible
+    // representation instead of retaining a full-resolution HEIC decode.
+    ui.libraryInput.accept = "image/jpeg,image/png";
+    ui.cameraInput.accept = "image/jpeg";
   }
   if (location.protocol === "file:") {
     ui.httpWarning.hidden = false;
@@ -1120,6 +1627,7 @@ function initialize() {
   if (interrupted) {
     const phaseText = {
       starting: "処理開始直後",
+      "preparing-upload": "写真の自動縮小中",
       "preparing-image": "写真の準備中",
       "loading-model": "OCRモデルの準備中",
       recognizing: "文字認識中",

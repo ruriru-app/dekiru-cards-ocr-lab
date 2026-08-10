@@ -363,6 +363,19 @@
         font-size: 11px;
       }
 
+      .crop-open-button {
+        justify-self: start;
+        min-height: 30px;
+        padding: 5px 10px;
+        color: #315f5a;
+        background: #fff;
+        border: 1px solid #bdd5d1;
+        border-radius: 999px;
+        font-size: 11px;
+        font-weight: 800;
+        cursor: pointer;
+      }
+
       .icon-button {
         display: grid;
         place-items: center;
@@ -375,6 +388,111 @@
         border-radius: 50%;
         font-size: 20px;
         cursor: pointer;
+      }
+
+      .crop-dialog[hidden] {
+        display: none;
+      }
+
+      .crop-dialog {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: grid;
+        place-items: center;
+        padding: 18px;
+        background: rgba(31, 47, 44, 0.72);
+      }
+
+      .crop-card {
+        display: grid;
+        gap: 14px;
+        width: min(100%, 620px);
+        max-height: calc(100dvh - 36px);
+        overflow: auto;
+        padding: 18px;
+        background: #fff;
+        border-radius: 22px;
+        box-shadow: 0 20px 65px rgba(0, 0, 0, 0.28);
+      }
+
+      .crop-card h2,
+      .crop-card p {
+        margin: 0;
+      }
+
+      .crop-card p {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.6;
+      }
+
+      .crop-stage {
+        position: relative;
+        display: grid;
+        place-items: center;
+        width: 100%;
+        max-height: 58dvh;
+        overflow: hidden;
+        border-radius: 14px;
+        background: #dbe6e4;
+        touch-action: none;
+        user-select: none;
+      }
+
+      .crop-stage img {
+        display: block;
+        max-width: 100%;
+        max-height: 58dvh;
+        object-fit: contain;
+        pointer-events: none;
+      }
+
+      .crop-box {
+        position: absolute;
+        border: 3px solid #fff;
+        border-radius: 6px;
+        box-shadow: 0 0 0 9999px rgba(20, 31, 29, 0.58), 0 0 0 1px #2f8177;
+        cursor: move;
+        touch-action: none;
+      }
+
+      .crop-handle {
+        position: absolute;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 3px solid #fff;
+        border-radius: 50%;
+        background: #2f8177;
+        box-shadow: 0 2px 7px rgba(0, 0, 0, 0.3);
+        touch-action: none;
+      }
+
+      .crop-handle[data-handle="nw"] { left: -15px; top: -15px; cursor: nwse-resize; }
+      .crop-handle[data-handle="ne"] { right: -15px; top: -15px; cursor: nesw-resize; }
+      .crop-handle[data-handle="sw"] { left: -15px; bottom: -15px; cursor: nesw-resize; }
+      .crop-handle[data-handle="se"] { right: -15px; bottom: -15px; cursor: nwse-resize; }
+
+      .crop-apply-all {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        color: var(--ink);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .crop-apply-all input {
+        width: 18px;
+        height: 18px;
+        margin: 0;
+      }
+
+      .crop-actions {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1.2fr;
+        gap: 8px;
       }
 
       .status-panel {
@@ -694,6 +812,23 @@
           grid-template-columns: 1fr 1fr;
         }
 
+        .crop-dialog {
+          padding: 8px;
+        }
+
+        .crop-card {
+          padding: 14px;
+          border-radius: 18px;
+        }
+
+        .crop-actions {
+          grid-template-columns: 1fr 1fr;
+        }
+
+        .crop-save-button {
+          grid-column: 1 / -1;
+        }
+
         .button {
           min-height: 46px;
           padding-inline: 10px;
@@ -758,7 +893,7 @@
           <button id="libraryButton" class="button button-soft" type="button">写真を選択</button>
         </div>
         <p class="upload-hint">
-          JPG・PNG・HEICに対応。まとめて最大12枚まで選べます。最初は1〜2枚で速度を確認するのがおすすめです。
+          JPG・PNG・HEICに対応。iPhoneでは写真をJPEGとして受け取り、大きな写真は選択時に自動で軽くします。まとめて最大12枚まで選べます。
         </p>
 
         <details class="advanced">
@@ -768,7 +903,8 @@
               画像の最大辺
               <select id="maxSide">
                 <option value="1400">1400px（最軽量）</option>
-                <option value="1600">1600px（iPhone推奨）</option>
+                <option value="1500">1500px（iPhone推奨）</option>
+                <option value="1600">1600px</option>
                 <option value="2000">2000px（軽い）</option>
                 <option value="2600" selected>2600px（標準）</option>
                 <option value="3200">3200px（細かい文字）</option>
@@ -866,6 +1002,34 @@
         </p>
       </footer>
     </main>
-    <script type="module" src="./ocr-lab.js?v=023"></script>
+
+    <div id="cropDialog" class="crop-dialog" role="dialog" aria-modal="true" aria-labelledby="cropTitle" hidden>
+      <div class="crop-card">
+        <div>
+          <h2 id="cropTitle">読み取り範囲を調整</h2>
+          <p>白い枠の内側だけを読み取ります。四隅の丸を動かして大きさを変え、枠の内側を動かすと位置を変えられます。</p>
+        </div>
+        <div id="cropStage" class="crop-stage">
+          <img id="cropImage" alt="読み取り範囲を調整する写真" />
+          <div id="cropBox" class="crop-box">
+            <button class="crop-handle" data-handle="nw" type="button" aria-label="左上を調整"></button>
+            <button class="crop-handle" data-handle="ne" type="button" aria-label="右上を調整"></button>
+            <button class="crop-handle" data-handle="sw" type="button" aria-label="左下を調整"></button>
+            <button class="crop-handle" data-handle="se" type="button" aria-label="右下を調整"></button>
+          </div>
+        </div>
+        <label class="crop-apply-all">
+          <input id="cropApplyAll" type="checkbox" checked />
+          選択中の写真すべてに同じ範囲を使う
+        </label>
+        <div class="crop-actions">
+          <button id="cropResetButton" class="button button-outline" type="button">全体に戻す</button>
+          <button id="cropCancelButton" class="button button-outline" type="button">キャンセル</button>
+          <button id="cropSaveButton" class="button button-primary crop-save-button" type="button">この範囲に決定</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./ocr-lab.js?v=024"></script>
   </body>
 </html>
