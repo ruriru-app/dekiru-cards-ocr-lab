@@ -1,4 +1,4 @@
-const APP_VERSION = "0.2.2";
+const APP_VERSION = "0.2.3";
 const OCR_SDK_VERSION = "0.4.2";
 const MODEL_NAME = "PP-OCRv5_mobile";
 const MAX_FILES = 12;
