@@ -1,4 +1,4 @@
-const APP_VERSION = "0.2.4";
+const APP_VERSION = "0.2.5";
 const OCR_SDK_VERSION = "0.4.2";
 const MODEL_NAME = "PP-OCRv5_mobile";
 const MAX_FILES = 12;
@@ -513,8 +513,11 @@ async function prepareInputImage(file) {
     try {
       const bitmap = await decodeReducedImage(file, width, height);
       const canvas = document.createElement("canvas");
-      canvas.width = bitmap.width;
-      canvas.height = bitmap.height;
+      // SafariがcreateImageBitmapのresizeWidth/resizeHeightを無視する場合が
+      // あります。返ってきたBitmapの大きさを信用せず、必ず指定した
+      // 安全な寸法のCanvasへ描き直します。
+      canvas.width = width;
+      canvas.height = height;
       const context = canvas.getContext("2d", { alpha: false });
       if (!context) {
         bitmap.close();
@@ -522,7 +525,9 @@ async function prepareInputImage(file) {
       }
       context.fillStyle = "#ffffff";
       context.fillRect(0, 0, canvas.width, canvas.height);
-      context.drawImage(bitmap.drawable, 0, 0);
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
+      context.drawImage(bitmap.drawable, 0, 0, width, height);
       bitmap.close();
       const blob = await canvasToBlob(canvas, "image/jpeg", 0.93);
       const prepared = {
@@ -663,10 +668,12 @@ async function makeOcrTiles(canvas) {
     ];
   }
 
-  const tileCount = 3;
+  // iPhoneでは検出処理中の一時メモリが最も大きくなるため、長辺を
+  // 約360pxずつに小分けします。ページ全体を一度にOCRへ渡しません。
+  const longSide = canvas.height >= canvas.width ? canvas.height : canvas.width;
+  const tileCount = Math.max(3, Math.min(6, Math.ceil(longSide / 360)));
   const overlap = Math.max(64, Math.round(Math.min(canvas.width, canvas.height) * 0.07));
   const splitVertically = canvas.height >= canvas.width;
-  const longSide = splitVertically ? canvas.height : canvas.width;
   const baseSize = Math.ceil(longSide / tileCount);
   const tiles = [];
 
@@ -1466,8 +1473,19 @@ async function runOcr() {
             baseProgress + ((tileIndex + 1) / normalized.tiles.length) * (70 / pageCount),
           );
           await nextPaint();
-          const [result] = await engine.predict(tile.blob, getRecognitionParams());
-          tileResults.push({ tile, result });
+          const tileBlob = tile.blob;
+          const [result] = await engine.predict(tileBlob, getRecognitionParams());
+          tileResults.push({
+            tile: {
+              x: tile.x,
+              y: tile.y,
+              width: tile.width,
+              height: tile.height,
+            },
+            result,
+          });
+          // 終わった区画画像を次の区画まで保持しないようにします。
+          tile.blob = null;
           await nextPaint();
         }
         page.result = mergeTileResults(
@@ -1633,9 +1651,12 @@ function initialize() {
       recognizing: "文字認識中",
       unknown: "処理中",
     }[interrupted.phase] || "処理中";
+    const interruptedDetail = interrupted.detail
+      ? `（${interrupted.detail}）`
+      : "";
     setStatus(
       "前回の処理中にページが再読み込みされました",
-      `${phaseText}に端末の負荷が高くなりました。今回の表示をお知らせください。`,
+      `${phaseText}${interruptedDetail}に端末の負荷が高くなりました。今回の表示をお知らせください。`,
       0,
       "warning",
     );
