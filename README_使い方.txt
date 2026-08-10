@@ -1,10 +1,10 @@
-DEKIRU Cards OCR検証版 v0.1.1
+DEKIRU Cards OCR検証版 v0.2.0
 
 このフォルダーは、写真からカードを作る前に、無料のブラウザーOCRでどこまで文字を読めるか確認するための検証ページです。
 教材やカードへの登録は行いません。
 
 【公開するとき】
-index.html、ocr-lab.js、worker-entry-C9UNuyOJ.jsを、すべて同じ場所へ置いてください。
+index.html、ocr-lab.js、heic-helper.js、worker-entry-C9UNuyOJ.jsを、すべて同じ場所へ置いてください。
 GitHubのアップロード画面でフォルダーが展開されても動作する構成です。
 
 【使い方】
